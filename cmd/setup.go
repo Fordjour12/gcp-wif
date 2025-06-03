@@ -2,10 +2,12 @@ package cmd
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
 
 	"github.com/Fordjour12/gcp-wif/internal/config"
 	"github.com/Fordjour12/gcp-wif/internal/errors"
+	"github.com/Fordjour12/gcp-wif/internal/github"
 	"github.com/Fordjour12/gcp-wif/internal/logging"
 	"github.com/Fordjour12/gcp-wif/internal/ui"
 	"github.com/spf13/cobra"
@@ -63,6 +65,22 @@ var (
 	wfEnvironment string
 	wfDockerImage string
 
+	// Environment and secrets flags
+	envNames          []string
+	envVariables      []string // format: "env:key=value"
+	envSecrets        []string // format: "env:key=SECRET_NAME"
+	envProtection     []string // format: "env:reviewers=@team,wait=5"
+	globalSecrets     []string // format: "key=SECRET_NAME"
+	buildSecrets      []string // format: "key=SECRET_NAME"
+	createStandardEnv bool
+
+	// Health check flags
+	healthChecks        []string // format: "name:url:method:timeout:retries:wait_time:healthy_code"
+	createDefaultHealth bool
+	healthCheckTimeout  string
+	healthCheckRetries  int
+	healthCheckWaitTime string
+
 	// Advanced flags
 	dryRun           bool
 	skipValidation   bool
@@ -97,6 +115,9 @@ Comprehensive flag support includes:
 - Workload Identity: --wi-pool-id, --wi-provider-id, --wi-conditions
 - Cloud Run: --cr-image, --cr-port, --cr-cpu-limit, --cr-memory-limit
 - Workflow: --wf-name, --wf-filename, --wf-triggers, --wf-environment
+- Environments: --env-names, --env-variables, --env-secrets, --env-protection, --create-standard-env
+- Secrets: --global-secrets, --build-secrets
+- Health Checks: --health-checks, --create-default-health, --health-check-timeout, --health-check-retries, --health-check-wait-time
 - Advanced: --dry-run, --skip-validation, --force-update, --timeout
 
 Use --help to see all available flags with detailed descriptions.`,
@@ -151,6 +172,23 @@ func init() {
 	setupCmd.Flags().StringSliceVar(&wfTriggers, "wf-triggers", []string{}, "Workflow triggers")
 	setupCmd.Flags().StringVar(&wfEnvironment, "wf-environment", "", "Workflow environment")
 	setupCmd.Flags().StringVar(&wfDockerImage, "wf-docker-image", "", "Workflow Docker image")
+
+	// Environment and secrets flags
+	setupCmd.Flags().StringSliceVar(&envNames, "env-names", []string{}, "Environment names to create")
+	setupCmd.Flags().StringSliceVar(&envVariables, "env-variables", []string{}, "Environment variables (format: env:key=value)")
+	setupCmd.Flags().StringSliceVar(&envSecrets, "env-secrets", []string{}, "Environment secrets (format: env:key=SECRET_NAME)")
+	setupCmd.Flags().StringSliceVar(&envProtection, "env-protection", []string{}, "Environment protection rules (format: env:reviewers=@team,wait=5)")
+	setupCmd.Flags().StringSliceVar(&globalSecrets, "global-secrets", []string{}, "Global workflow secrets (format: key=SECRET_NAME)")
+	setupCmd.Flags().StringSliceVar(&buildSecrets, "build-secrets", []string{}, "Build-time secrets (format: key=SECRET_NAME)")
+	setupCmd.Flags().BoolVar(&createStandardEnv, "create-standard-env", false, "Create standard environments (dev, staging, production)")
+
+	// Health check flags
+	setupCmd.Flags().StringSliceVar(&healthChecks, "health-checks", []string{}, "Health check configuration (format: name:url:method:timeout:retries:wait_time:healthy_code)")
+	setupCmd.Flags().BoolVar(&createDefaultHealth, "create-default-health", false, "Create default health checks")
+	setupCmd.Flags().StringVar(&healthCheckTimeout, "health-check-timeout", "", "Health check timeout")
+	setupCmd.Flags().IntVar(&healthCheckRetries, "health-check-retries", 0, "Health check retries")
+	setupCmd.Flags().StringVar(&healthCheckWaitTime, "health-check-wait-time", "", "Health check wait time")
+
 	setupCmd.Flags().BoolVar(&dryRun, "dry-run", false, "Enable dry run")
 	setupCmd.Flags().BoolVar(&skipValidation, "skip-validation", false, "Skip configuration validation")
 	setupCmd.Flags().BoolVar(&forceUpdate, "force-update", false, "Force update")
@@ -449,20 +487,67 @@ func applyFlagsToConfig(cfg *config.Config) error {
 
 	// Apply workflow triggers
 	if len(wfTriggers) > 0 {
-		cfg.Workflow.Triggers = wfTriggers
-		logger.Debug("Applied workflow triggers from flag", "triggers", strings.Join(wfTriggers, ", "))
+		logger.Debug("Applying workflow triggers from flag", "triggers_input", strings.Join(wfTriggers, ", "))
+		// Initialize Triggers struct if it's zero, but preserve defaults from DefaultWorkflowConfig if already set.
+		// If flags are provided, they will selectively enable parts of the Triggers struct.
+		// We don't zero out cfg.Workflow.Triggers here because DefaultConfig already called DefaultWorkflowConfig.
+		// Flags should ADD or OVERRIDE specific parts of triggers.
+
+		// Create a new Triggers struct to apply flag changes, then merge if needed or replace.
+		// For simplicity with current StringSlice flag, flags will enable trigger types.
+		// More granular control (branches for push from flag) would require more complex flag parsing.
+		tempTriggers := cfg.Workflow.Triggers // Start with existing (default or loaded) triggers
+
+		for _, t := range wfTriggers {
+			switch strings.ToLower(t) {
+			case "push":
+				tempTriggers.Push.Enabled = true
+				// If branches for push are not set by other means (e.g. defaults), set some basic ones.
+				if len(tempTriggers.Push.Branches) == 0 {
+					tempTriggers.Push.Branches = []string{"main", "master"}
+				}
+			case "pull_request", "pr":
+				tempTriggers.PullRequest.Enabled = true
+				if len(tempTriggers.PullRequest.Branches) == 0 {
+					tempTriggers.PullRequest.Branches = []string{"main", "master"}
+				}
+				if len(tempTriggers.PullRequest.Types) == 0 {
+					tempTriggers.PullRequest.Types = []string{"opened", "synchronize", "reopened"}
+				}
+			case "manual", "workflow_dispatch":
+				tempTriggers.Manual = true
+			case "release":
+				tempTriggers.Release = true
+			// Note: Schedule trigger is complex (cron string) and harder to set with a simple string slice flag.
+			// It would typically be set via config file or a dedicated flag.
+			default:
+				logger.Warn("Unknown workflow trigger type from flag", "trigger", t)
+			}
+		}
+		cfg.Workflow.Triggers = tempTriggers // Assign the modified triggers back
 	}
 
-	// Apply workflow environment
+	// Apply workflow environment name (maps to Advanced.Environments)
 	if wfEnvironment != "" {
-		cfg.Workflow.Environment = wfEnvironment
-		logger.Debug("Applied workflow environment from flag", "environment", wfEnvironment)
+		if cfg.Workflow.Advanced.Environments == nil {
+			cfg.Workflow.Advanced.Environments = make(map[string]github.Environment)
+		}
+		// If the environment doesn't exist, create a basic entry.
+		// More detailed environment config would need more flags or config file.
+		if _, exists := cfg.Workflow.Advanced.Environments[wfEnvironment]; !exists {
+			cfg.Workflow.Advanced.Environments[wfEnvironment] = github.Environment{Name: wfEnvironment}
+		}
+		logger.Debug("Applied workflow environment from flag", "environment_name", wfEnvironment)
 	}
 
-	// Apply workflow Docker image
+	// Apply workflow Docker image name (maps to Workflow.ServiceName, which influences image name)
+	// The actual image URI is constructed by the template using ServiceName, ProjectID, and Region.
+	// The 'Registry' field in WorkflowConfig specifies the Docker registry host (e.g., gcr.io, pkg.dev).
 	if wfDockerImage != "" {
-		cfg.Workflow.DockerImage = wfDockerImage
-		logger.Debug("Applied workflow Docker image from flag", "docker_image", wfDockerImage)
+		// If wfDockerImage looks like a full path (e.g., gcr.io/my-project/my-image), it's more complex.
+		// For now, assume wfDockerImage is intended to be the *service name* or *base image name*.
+		cfg.Workflow.ServiceName = wfDockerImage
+		logger.Debug("Applied workflow Docker image (as ServiceName) from flag", "service_name_for_image", wfDockerImage)
 	}
 
 	// Apply dry run
@@ -507,9 +592,355 @@ func applyFlagsToConfig(cfg *config.Config) error {
 		logger.Debug("Applied timeout from flag", "timeout", timeout)
 	}
 
+	// Apply environment and secrets configurations
+	if err := applyEnvironmentFlags(cfg); err != nil {
+		return err
+	}
+
+	// Apply health check configurations
+	if err := applyHealthCheckFlags(cfg); err != nil {
+		return err
+	}
+
 	// Apply defaults after flag overrides
 	cfg.SetDefaults()
 
+	return nil
+}
+
+// applyEnvironmentFlags applies environment and secrets related flags to the configuration
+func applyEnvironmentFlags(cfg *config.Config) error {
+	logger := logging.WithField("function", "applyEnvironmentFlags")
+
+	// Create standard environments if requested
+	if createStandardEnv {
+		cfg.Workflow.CreateStandardEnvironments()
+		logger.Debug("Created standard environments (development, staging, production)")
+	}
+
+	// Add custom environment names
+	for _, envName := range envNames {
+		if strings.TrimSpace(envName) != "" {
+			cfg.Workflow.AddEnvironment(envName, github.Environment{Name: envName})
+			logger.Debug("Added environment from flag", "environment", envName)
+		}
+	}
+
+	// Parse and apply environment variables (format: "env:key=value")
+	for _, envVar := range envVariables {
+		if err := parseAndApplyEnvironmentVariable(cfg, envVar); err != nil {
+			return fmt.Errorf("invalid environment variable format '%s': %w", envVar, err)
+		}
+	}
+
+	// Parse and apply environment secrets (format: "env:key=SECRET_NAME")
+	for _, envSecret := range envSecrets {
+		if err := parseAndApplyEnvironmentSecret(cfg, envSecret); err != nil {
+			return fmt.Errorf("invalid environment secret format '%s': %w", envSecret, err)
+		}
+	}
+
+	// Parse and apply environment protection rules (format: "env:reviewers=@team,wait=5")
+	for _, envProt := range envProtection {
+		if err := parseAndApplyEnvironmentProtection(cfg, envProt); err != nil {
+			return fmt.Errorf("invalid environment protection format '%s': %w", envProt, err)
+		}
+	}
+
+	// Parse and apply global secrets (format: "key=SECRET_NAME")
+	for _, globalSecret := range globalSecrets {
+		if err := parseAndApplyGlobalSecret(cfg, globalSecret); err != nil {
+			return fmt.Errorf("invalid global secret format '%s': %w", globalSecret, err)
+		}
+	}
+
+	// Parse and apply build secrets (format: "key=SECRET_NAME")
+	for _, buildSecret := range buildSecrets {
+		if err := parseAndApplyBuildSecret(cfg, buildSecret); err != nil {
+			return fmt.Errorf("invalid build secret format '%s': %w", buildSecret, err)
+		}
+	}
+
+	logger.Debug("Applied all environment and secrets flags successfully")
+	return nil
+}
+
+// parseAndApplyEnvironmentVariable parses and applies environment variable (format: "env:key=value")
+func parseAndApplyEnvironmentVariable(cfg *config.Config, envVar string) error {
+	parts := strings.SplitN(envVar, ":", 2)
+	if len(parts) != 2 {
+		return fmt.Errorf("expected format 'env:key=value', got '%s'", envVar)
+	}
+
+	envName := strings.TrimSpace(parts[0])
+	keyValue := strings.TrimSpace(parts[1])
+
+	kvParts := strings.SplitN(keyValue, "=", 2)
+	if len(kvParts) != 2 {
+		return fmt.Errorf("expected format 'env:key=value', got '%s'", envVar)
+	}
+
+	key := strings.TrimSpace(kvParts[0])
+	value := strings.TrimSpace(kvParts[1])
+
+	if envName == "" || key == "" {
+		return fmt.Errorf("environment name and key cannot be empty")
+	}
+
+	return cfg.Workflow.AddEnvironmentVariable(envName, key, value)
+}
+
+// parseAndApplyEnvironmentSecret parses and applies environment secret (format: "env:key=SECRET_NAME")
+func parseAndApplyEnvironmentSecret(cfg *config.Config, envSecret string) error {
+	parts := strings.SplitN(envSecret, ":", 2)
+	if len(parts) != 2 {
+		return fmt.Errorf("expected format 'env:key=SECRET_NAME', got '%s'", envSecret)
+	}
+
+	envName := strings.TrimSpace(parts[0])
+	keyValue := strings.TrimSpace(parts[1])
+
+	kvParts := strings.SplitN(keyValue, "=", 2)
+	if len(kvParts) != 2 {
+		return fmt.Errorf("expected format 'env:key=SECRET_NAME', got '%s'", envSecret)
+	}
+
+	key := strings.TrimSpace(kvParts[0])
+	secretRef := strings.TrimSpace(kvParts[1])
+
+	if envName == "" || key == "" || secretRef == "" {
+		return fmt.Errorf("environment name, key, and secret reference cannot be empty")
+	}
+
+	return cfg.Workflow.AddEnvironmentSecret(envName, key, secretRef)
+}
+
+// parseAndApplyEnvironmentProtection parses and applies environment protection (format: "env:reviewers=@team,wait=5")
+func parseAndApplyEnvironmentProtection(cfg *config.Config, envProt string) error {
+	parts := strings.SplitN(envProt, ":", 2)
+	if len(parts) != 2 {
+		return fmt.Errorf("expected format 'env:protection_rules', got '%s'", envProt)
+	}
+
+	envName := strings.TrimSpace(parts[0])
+	protectionRules := strings.TrimSpace(parts[1])
+
+	if envName == "" {
+		return fmt.Errorf("environment name cannot be empty")
+	}
+
+	// Get or create environment
+	env, exists := cfg.Workflow.GetEnvironment(envName)
+	if !exists {
+		env = github.Environment{Name: envName}
+	}
+
+	// Parse protection rules (format: "reviewers=@team1,@team2,wait=5,prevent_self=true")
+	rules := strings.Split(protectionRules, ",")
+	for _, rule := range rules {
+		rule = strings.TrimSpace(rule)
+		if rule == "" {
+			continue
+		}
+
+		if strings.HasPrefix(rule, "reviewers=") {
+			reviewersStr := strings.TrimPrefix(rule, "reviewers=")
+			reviewers := strings.Split(reviewersStr, " ")
+			for i, reviewer := range reviewers {
+				reviewers[i] = strings.TrimSpace(reviewer)
+			}
+			env.Protection.RequiredReviewers = reviewers
+		} else if strings.HasPrefix(rule, "wait=") {
+			waitStr := strings.TrimPrefix(rule, "wait=")
+			var waitTime int
+			if _, err := fmt.Sscanf(waitStr, "%d", &waitTime); err != nil {
+				return fmt.Errorf("invalid wait time '%s': %w", waitStr, err)
+			}
+			env.Protection.WaitTimer = waitTime
+		} else if rule == "prevent_self=true" {
+			env.Protection.PreventSelfReview = true
+		} else if rule == "prevent_self=false" {
+			env.Protection.PreventSelfReview = false
+		} else {
+			return fmt.Errorf("unknown protection rule '%s'", rule)
+		}
+	}
+
+	cfg.Workflow.AddEnvironment(envName, env)
+	return nil
+}
+
+// parseAndApplyGlobalSecret parses and applies global secret (format: "key=SECRET_NAME")
+func parseAndApplyGlobalSecret(cfg *config.Config, globalSecret string) error {
+	parts := strings.SplitN(globalSecret, "=", 2)
+	if len(parts) != 2 {
+		return fmt.Errorf("expected format 'key=SECRET_NAME', got '%s'", globalSecret)
+	}
+
+	key := strings.TrimSpace(parts[0])
+	secretRef := strings.TrimSpace(parts[1])
+
+	if key == "" || secretRef == "" {
+		return fmt.Errorf("key and secret reference cannot be empty")
+	}
+
+	cfg.Workflow.AddGlobalSecret(key, secretRef)
+	return nil
+}
+
+// parseAndApplyBuildSecret parses and applies build secret (format: "key=SECRET_NAME")
+func parseAndApplyBuildSecret(cfg *config.Config, buildSecret string) error {
+	parts := strings.SplitN(buildSecret, "=", 2)
+	if len(parts) != 2 {
+		return fmt.Errorf("expected format 'key=SECRET_NAME', got '%s'", buildSecret)
+	}
+
+	key := strings.TrimSpace(parts[0])
+	secretRef := strings.TrimSpace(parts[1])
+
+	if key == "" || secretRef == "" {
+		return fmt.Errorf("key and secret reference cannot be empty")
+	}
+
+	cfg.Workflow.AddBuildSecret(key, secretRef)
+	return nil
+}
+
+// applyHealthCheckFlags applies health check related flags to the configuration
+func applyHealthCheckFlags(cfg *config.Config) error {
+	logger := logging.WithField("function", "applyHealthCheckFlags")
+
+	// Apply health check configurations
+	for _, healthCheck := range healthChecks {
+		if err := parseAndApplyHealthCheck(cfg, healthCheck); err != nil {
+			return fmt.Errorf("invalid health check format '%s': %w", healthCheck, err)
+		}
+	}
+
+	// Apply create default health checks
+	if createDefaultHealth {
+		cfg.Workflow.CreateDefaultHealthChecks()
+		logger.Debug("Created default health checks")
+	}
+
+	// Apply health check timeout (create basic health check with timeout setting)
+	if healthCheckTimeout != "" {
+		// Apply timeout to all existing health checks or create a basic one
+		if len(cfg.Workflow.Advanced.HealthChecks) == 0 {
+			cfg.Workflow.AddHealthCheck(github.HealthCheck{
+				Name:        "basic-health",
+				URL:         "/health",
+				Method:      "GET",
+				Timeout:     healthCheckTimeout,
+				Retries:     3,
+				WaitTime:    "5s",
+				HealthyCode: 200,
+			})
+		} else {
+			// Update timeout for existing health checks
+			for i := range cfg.Workflow.Advanced.HealthChecks {
+				cfg.Workflow.Advanced.HealthChecks[i].Timeout = healthCheckTimeout
+			}
+		}
+		logger.Debug("Applied health check timeout from flag", "timeout", healthCheckTimeout)
+	}
+
+	// Apply health check retries
+	if healthCheckRetries != 0 {
+		// Apply retries to all existing health checks or create a basic one
+		if len(cfg.Workflow.Advanced.HealthChecks) == 0 {
+			cfg.Workflow.AddHealthCheck(github.HealthCheck{
+				Name:        "basic-health",
+				URL:         "/health",
+				Method:      "GET",
+				Timeout:     "10s",
+				Retries:     healthCheckRetries,
+				WaitTime:    "5s",
+				HealthyCode: 200,
+			})
+		} else {
+			// Update retries for existing health checks
+			for i := range cfg.Workflow.Advanced.HealthChecks {
+				cfg.Workflow.Advanced.HealthChecks[i].Retries = healthCheckRetries
+			}
+		}
+		logger.Debug("Applied health check retries from flag", "retries", healthCheckRetries)
+	}
+
+	// Apply health check wait time
+	if healthCheckWaitTime != "" {
+		// Apply wait time to all existing health checks or create a basic one
+		if len(cfg.Workflow.Advanced.HealthChecks) == 0 {
+			cfg.Workflow.AddHealthCheck(github.HealthCheck{
+				Name:        "basic-health",
+				URL:         "/health",
+				Method:      "GET",
+				Timeout:     "10s",
+				Retries:     3,
+				WaitTime:    healthCheckWaitTime,
+				HealthyCode: 200,
+			})
+		} else {
+			// Update wait time for existing health checks
+			for i := range cfg.Workflow.Advanced.HealthChecks {
+				cfg.Workflow.Advanced.HealthChecks[i].WaitTime = healthCheckWaitTime
+			}
+		}
+		logger.Debug("Applied health check wait time from flag", "wait_time", healthCheckWaitTime)
+	}
+
+	logger.Debug("Applied all health check flags successfully")
+	return nil
+}
+
+// parseAndApplyHealthCheck parses and applies health check configuration (format: "name:url:method:timeout:retries:wait_time:healthy_code")
+func parseAndApplyHealthCheck(cfg *config.Config, healthCheck string) error {
+	parts := strings.SplitN(healthCheck, ":", 7)
+	if len(parts) != 7 {
+		return fmt.Errorf("expected format 'name:url:method:timeout:retries:wait_time:healthy_code', got '%s'", healthCheck)
+	}
+
+	name := strings.TrimSpace(parts[0])
+	url := strings.TrimSpace(parts[1])
+	method := strings.TrimSpace(parts[2])
+	timeout := strings.TrimSpace(parts[3])
+	retries := strings.TrimSpace(parts[4])
+	waitTime := strings.TrimSpace(parts[5])
+	healthyCode := strings.TrimSpace(parts[6])
+
+	if name == "" || url == "" || method == "" || timeout == "" || retries == "" || waitTime == "" || healthyCode == "" {
+		return fmt.Errorf("health check name, url, method, timeout, retries, wait_time, and healthy_code cannot be empty")
+	}
+
+	var retriesCount int
+	if retries != "" {
+		var err error
+		retriesCount, err = strconv.Atoi(retries)
+		if err != nil {
+			return fmt.Errorf("invalid retries format '%s': %w", retries, err)
+		}
+	}
+
+	var healthyCodeInt int
+	if healthyCode != "" {
+		var err error
+		healthyCodeInt, err = strconv.Atoi(healthyCode)
+		if err != nil {
+			return fmt.Errorf("invalid healthy_code format '%s': %w", healthyCode, err)
+		}
+	}
+
+	healthCheckConfig := github.HealthCheck{
+		Name:        name,
+		URL:         url,
+		Method:      method,
+		Timeout:     timeout, // Keep as string
+		Retries:     retriesCount,
+		WaitTime:    waitTime, // Keep as string
+		HealthyCode: healthyCodeInt,
+	}
+
+	cfg.Workflow.AddHealthCheck(healthCheckConfig)
 	return nil
 }
 
@@ -566,8 +997,61 @@ func displayConfigSummary(cfg *config.Config) {
 
 	// Workflow information
 	fmt.Printf("⚡ Workflow File: %s\n", cfg.GetWorkflowFilePath())
-	if len(cfg.Workflow.Triggers) > 0 {
-		fmt.Printf("🎯 Triggers: %s\n", strings.Join(cfg.Workflow.Triggers, ", "))
+
+	// Format Triggers for display
+	var triggerDisplayStrings []string
+	if cfg.Workflow.Triggers.Push.Enabled {
+		pushStr := "Push"
+		if len(cfg.Workflow.Triggers.Push.Branches) > 0 {
+			pushStr += fmt.Sprintf(" (branches: %s)", strings.Join(cfg.Workflow.Triggers.Push.Branches, ", "))
+		}
+		triggerDisplayStrings = append(triggerDisplayStrings, pushStr)
+	}
+	if cfg.Workflow.Triggers.PullRequest.Enabled {
+		prStr := "Pull Request"
+		if len(cfg.Workflow.Triggers.PullRequest.Branches) > 0 {
+			prStr += fmt.Sprintf(" (branches: %s)", strings.Join(cfg.Workflow.Triggers.PullRequest.Branches, ", "))
+		}
+		if len(cfg.Workflow.Triggers.PullRequest.Types) > 0 {
+			prStr += fmt.Sprintf(" (types: %s)", strings.Join(cfg.Workflow.Triggers.PullRequest.Types, ", "))
+		}
+		triggerDisplayStrings = append(triggerDisplayStrings, prStr)
+	}
+	if cfg.Workflow.Triggers.Manual {
+		triggerDisplayStrings = append(triggerDisplayStrings, "Manual (workflow_dispatch)")
+	}
+	if cfg.Workflow.Triggers.Release {
+		triggerDisplayStrings = append(triggerDisplayStrings, "Release")
+	}
+	for _, s := range cfg.Workflow.Triggers.Schedule {
+		triggerDisplayStrings = append(triggerDisplayStrings, fmt.Sprintf("Schedule (%s)", s.Cron))
+	}
+	if len(triggerDisplayStrings) > 0 {
+		fmt.Printf("🎯 Triggers: %s\n", strings.Join(triggerDisplayStrings, "; "))
+	}
+
+	// Display configured deployment environments from Workflow.Advanced.Environments
+	if len(cfg.Workflow.Advanced.Environments) > 0 {
+		var envNames []string
+		for name := range cfg.Workflow.Advanced.Environments {
+			envNames = append(envNames, name)
+		}
+		fmt.Printf("🌍 Deployment Environments: %s\n", strings.Join(envNames, ", "))
+	}
+
+	// Health check information
+	if len(cfg.Workflow.Advanced.HealthChecks) > 0 {
+		fmt.Println("\n🔍 Health Checks:")
+		fmt.Println("================")
+		for _, healthCheck := range cfg.Workflow.Advanced.HealthChecks {
+			fmt.Printf("🔗 Health Check: %s\n", healthCheck.Name)
+			fmt.Printf("🌍 URL: %s\n", healthCheck.URL)
+			fmt.Printf("🔧 Method: %s\n", healthCheck.Method)
+			fmt.Printf("⏱️  Timeout: %s\n", healthCheck.Timeout)
+			fmt.Printf("🔄 Retries: %d\n", healthCheck.Retries)
+			fmt.Printf("⏳ Wait Time: %s\n", healthCheck.WaitTime)
+			fmt.Printf("🔍 Healthy Code: %d\n", healthCheck.HealthyCode)
+		}
 	}
 
 	// Advanced settings

@@ -414,11 +414,54 @@ func displayDetailedConfigSummary(cfg *config.Config) {
 
 	// Workflow information
 	fmt.Printf("⚡ Workflow File: %s\n", cfg.GetWorkflowFilePath())
-	if len(cfg.Workflow.Triggers) > 0 {
-		fmt.Printf("🎯 Triggers: %s\n", strings.Join(cfg.Workflow.Triggers, ", "))
+
+	// Format Triggers
+	var triggerStrings []string
+	if cfg.Workflow.Triggers.Push.Enabled {
+		pushStr := "Push"
+		if len(cfg.Workflow.Triggers.Push.Branches) > 0 {
+			pushStr += fmt.Sprintf(" (branches: %s)", strings.Join(cfg.Workflow.Triggers.Push.Branches, ", "))
+		}
+		triggerStrings = append(triggerStrings, pushStr)
 	}
-	if cfg.Workflow.Environment != "" {
-		fmt.Printf("🌍 Environment: %s\n", cfg.Workflow.Environment)
+	if cfg.Workflow.Triggers.PullRequest.Enabled {
+		prStr := "Pull Request"
+		if len(cfg.Workflow.Triggers.PullRequest.Branches) > 0 {
+			prStr += fmt.Sprintf(" (branches: %s)", strings.Join(cfg.Workflow.Triggers.PullRequest.Branches, ", "))
+		}
+		if len(cfg.Workflow.Triggers.PullRequest.Types) > 0 {
+			prStr += fmt.Sprintf(" (types: %s)", strings.Join(cfg.Workflow.Triggers.PullRequest.Types, ", "))
+		}
+		triggerStrings = append(triggerStrings, prStr)
+	}
+	if cfg.Workflow.Triggers.Manual {
+		triggerStrings = append(triggerStrings, "Manual (workflow_dispatch)")
+	}
+	if cfg.Workflow.Triggers.Release {
+		triggerStrings = append(triggerStrings, "Release")
+	}
+	for _, s := range cfg.Workflow.Triggers.Schedule {
+		triggerStrings = append(triggerStrings, fmt.Sprintf("Schedule (%s)", s.Cron))
+	}
+	if len(triggerStrings) > 0 {
+		fmt.Printf("🎯 Triggers: %s\n", strings.Join(triggerStrings, "; "))
+	}
+
+	// Display configured deployment environments from Workflow.Advanced.Environments
+	if len(cfg.Workflow.Advanced.Environments) > 0 {
+		var envNames []string
+		for name := range cfg.Workflow.Advanced.Environments {
+			envNames = append(envNames, name)
+		}
+		fmt.Printf("🌍 Deployment Environments: %s\n", strings.Join(envNames, ", "))
+	}
+
+	// Display Docker build information
+	if cfg.Workflow.DockerfilePath != "" {
+		fmt.Printf("🐳 Dockerfile: %s (context: %s)\n", cfg.Workflow.DockerfilePath, cfg.Workflow.BuildContext)
+	}
+	if cfg.Workflow.Registry != "" {
+		fmt.Printf("📦 Docker Registry: %s\n", cfg.Workflow.Registry) // This is w.getRegistryHost() effectively
 	}
 
 	// Advanced settings

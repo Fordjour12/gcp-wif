@@ -93,6 +93,31 @@ type SecurityConditions struct {
 	AllowPullRequests bool     `json:"allow_pull_requests"`
 }
 
+// IAMBindingConfig holds configuration for IAM policy bindings
+type IAMBindingConfig struct {
+	ServiceAccountEmail string            `json:"service_account_email"`
+	PoolID              string            `json:"pool_id"`
+	ProviderID          string            `json:"provider_id"`
+	Repository          string            `json:"repository"`
+	AllowedBranches     []string          `json:"allowed_branches,omitempty"`
+	AllowedTags         []string          `json:"allowed_tags,omitempty"`
+	AllowPullRequests   bool              `json:"allow_pull_requests"`
+	GitHubOIDC          *GitHubOIDCConfig `json:"github_oidc,omitempty"`
+	BindingTitle        string            `json:"binding_title,omitempty"`
+	BindingDescription  string            `json:"binding_description,omitempty"`
+	ExpirationTime      string            `json:"expiration_time,omitempty"` // Optional binding expiration
+}
+
+// SecurityBindingStrategy represents different security strategies for IAM bindings
+type SecurityBindingStrategy string
+
+const (
+	SecurityBindingStrategyStrict     SecurityBindingStrategy = "strict"     // Strict repository and branch conditions
+	SecurityBindingStrategyModerate   SecurityBindingStrategy = "moderate"   // Repository with optional branch restrictions
+	SecurityBindingStrategyPermissive SecurityBindingStrategy = "permissive" // Repository-only restrictions
+	SecurityBindingStrategyCustom     SecurityBindingStrategy = "custom"     // Custom CEL expression
+)
+
 // GetDefaultGitHubOIDCConfig returns default GitHub OIDC configuration
 func GetDefaultGitHubOIDCConfig() *GitHubOIDCConfig {
 	return &GitHubOIDCConfig{
@@ -666,38 +691,518 @@ func (c *Client) BindServiceAccountToWorkloadIdentity(config *WorkloadIdentityCo
 		return errors.NewValidationError("Service account email is required")
 	}
 
-	// Create IAM policy binding for service account impersonation
-	member := fmt.Sprintf("principalSet://iam.googleapis.com/projects/%s/locations/global/workloadIdentityPools/%s/attribute.repository/%s",
-		c.ProjectID, config.PoolID, config.Repository)
+	// Create enhanced IAM policy binding with comprehensive security conditions
+	bindingConfig := &IAMBindingConfig{
+		ServiceAccountEmail: config.ServiceAccountEmail,
+		PoolID:              config.PoolID,
+		ProviderID:          config.ProviderID,
+		Repository:          config.Repository,
+		AllowedBranches:     config.AllowedBranches,
+		AllowedTags:         config.AllowedTags,
+		AllowPullRequests:   config.AllowPullRequests,
+		GitHubOIDC:          config.GitHubOIDC,
+	}
 
-	// Build condition for binding
-	conditionTitle := fmt.Sprintf("WIF for %s", config.Repository)
-	conditionDescription := fmt.Sprintf("Allow GitHub repository %s to impersonate service account via workload identity", config.Repository)
-	conditionExpression := fmt.Sprintf("assertion.repository=='%s'", config.Repository)
+	// Create multiple role bindings with different security levels
+	if err := c.createServiceAccountTokenCreatorBinding(bindingConfig); err != nil {
+		return errors.WrapError(err, errors.ErrorTypeGCP, "SA_TOKEN_CREATOR_BINDING_FAILED",
+			"Failed to create service account token creator binding")
+	}
 
-	logger.Debug("Creating IAM policy binding",
-		"member", member,
-		"service_account", config.ServiceAccountEmail,
-		"condition", conditionExpression)
-
-	// Grant workloadIdentityUser role to the service account for the GitHub repository
-	cmd := exec.Command("gcloud", "iam", "service-accounts", "add-iam-policy-binding", config.ServiceAccountEmail,
-		"--project", c.ProjectID,
-		"--member", member,
-		"--role", "roles/iam.serviceAccountTokenCreator",
-		"--condition", fmt.Sprintf("title=%s,description=%s,expression=%s",
-			conditionTitle, conditionDescription, conditionExpression),
-		"--format", "json")
-
-	output, err := cmd.CombinedOutput()
-	if err != nil {
-		return errors.WrapError(err, errors.ErrorTypeGCP, "WI_BINDING_FAILED",
-			fmt.Sprintf("Failed to bind service account to workload identity: %s", string(output)))
+	// Optionally create workload identity user binding for legacy compatibility
+	if err := c.createWorkloadIdentityUserBinding(bindingConfig); err != nil {
+		logger.Warn("Failed to create workload identity user binding", "error", err)
+		// Don't fail the entire operation for legacy binding issues
 	}
 
 	logger.Info("Service account bound to workload identity successfully",
 		"service_account", config.ServiceAccountEmail,
+		"repository", config.Repository,
+		"branches", config.AllowedBranches,
+		"tags", config.AllowedTags,
+		"pull_requests", config.AllowPullRequests)
+
+	return nil
+}
+
+// createServiceAccountTokenCreatorBinding creates the primary IAM binding for service account impersonation
+func (c *Client) createServiceAccountTokenCreatorBinding(config *IAMBindingConfig) error {
+	logger := c.logger.WithField("function", "createServiceAccountTokenCreatorBinding")
+	logger.Debug("Creating service account token creator binding",
+		"service_account", config.ServiceAccountEmail,
 		"repository", config.Repository)
+
+	// Build enhanced principal set member
+	member := c.buildPrincipalSetMember(config)
+
+	// Build enhanced security condition
+	condition := c.buildEnhancedIAMCondition(config)
+
+	// Create the binding
+	if err := c.executeIAMBinding(config.ServiceAccountEmail, member, "roles/iam.serviceAccountTokenCreator", condition); err != nil {
+		return err
+	}
+
+	logger.Info("Service account token creator binding created successfully",
+		"service_account", config.ServiceAccountEmail,
+		"repository", config.Repository)
+
+	return nil
+}
+
+// createWorkloadIdentityUserBinding creates a legacy workload identity user binding for compatibility
+func (c *Client) createWorkloadIdentityUserBinding(config *IAMBindingConfig) error {
+	logger := c.logger.WithField("function", "createWorkloadIdentityUserBinding")
+	logger.Debug("Creating workload identity user binding",
+		"service_account", config.ServiceAccountEmail,
+		"repository", config.Repository)
+
+	// Build legacy principal set member (for backward compatibility)
+	member := fmt.Sprintf("principalSet://iam.googleapis.com/projects/%s/locations/global/workloadIdentityPools/%s/attribute.repository/%s",
+		c.ProjectID, config.PoolID, config.Repository)
+
+	// Build basic condition for legacy binding
+	condition := &IAMCondition{
+		Title:       fmt.Sprintf("Legacy WIF for %s", config.Repository),
+		Description: fmt.Sprintf("Legacy workload identity user access for repository %s", config.Repository),
+		Expression:  fmt.Sprintf("assertion.repository=='%s'", config.Repository),
+	}
+
+	// Create the binding
+	if err := c.executeIAMBinding(config.ServiceAccountEmail, member, "roles/iam.workloadIdentityUser", condition); err != nil {
+		return err
+	}
+
+	logger.Debug("Workload identity user binding created successfully",
+		"service_account", config.ServiceAccountEmail,
+		"repository", config.Repository)
+
+	return nil
+}
+
+// buildPrincipalSetMember builds an enhanced principal set member string with multiple attribute options
+func (c *Client) buildPrincipalSetMember(config *IAMBindingConfig) string {
+	// Use provider-based principal set for more granular control
+	return fmt.Sprintf("principalSet://iam.googleapis.com/projects/%s/locations/global/workloadIdentityPools/%s/providers/%s/*",
+		c.ProjectID, config.PoolID, config.ProviderID)
+}
+
+// IAMCondition represents an IAM condition for policy bindings
+type IAMCondition struct {
+	Title       string `json:"title"`
+	Description string `json:"description"`
+	Expression  string `json:"expression"`
+}
+
+// buildEnhancedIAMCondition builds comprehensive security conditions for IAM bindings
+func (c *Client) buildEnhancedIAMCondition(config *IAMBindingConfig) *IAMCondition {
+	title := config.BindingTitle
+	if title == "" {
+		title = fmt.Sprintf("Enhanced WIF for %s", config.Repository)
+	}
+
+	description := config.BindingDescription
+	if description == "" {
+		description = fmt.Sprintf("Enhanced workload identity access for GitHub repository %s with comprehensive security conditions", config.Repository)
+	}
+
+	// Build comprehensive CEL expression
+	expression := c.buildComprehensiveSecurityExpression(config)
+
+	return &IAMCondition{
+		Title:       title,
+		Description: description,
+		Expression:  expression,
+	}
+}
+
+// buildComprehensiveSecurityExpression builds a comprehensive CEL security expression
+func (c *Client) buildComprehensiveSecurityExpression(config *IAMBindingConfig) string {
+	var conditions []string
+
+	// Base repository condition (required)
+	conditions = append(conditions, fmt.Sprintf("assertion.repository=='%s'", config.Repository))
+
+	// Add GitHub OIDC security conditions if configured
+	if config.GitHubOIDC != nil {
+		// Repository owner verification (prevent forked repo attacks)
+		if config.GitHubOIDC.BlockForkedRepos {
+			repositoryOwner := strings.Split(config.Repository, "/")[0]
+			conditions = append(conditions, fmt.Sprintf("assertion.repository_owner=='%s'", repositoryOwner))
+		}
+
+		// Actor verification (ensure actor claim is present)
+		if config.GitHubOIDC.RequireActor {
+			conditions = append(conditions, "has(assertion.actor)")
+		}
+
+		// Workflow path validation (prevent workflow injection attacks)
+		if config.GitHubOIDC.ValidateTokenPath {
+			conditions = append(conditions, fmt.Sprintf("assertion.job_workflow_ref.startsWith('%s/.github/workflows/')", config.Repository))
+		}
+
+		// Trusted repositories check
+		if len(config.GitHubOIDC.TrustedRepos) > 0 {
+			trustedConditions := make([]string, len(config.GitHubOIDC.TrustedRepos))
+			for i, repo := range config.GitHubOIDC.TrustedRepos {
+				trustedConditions[i] = fmt.Sprintf("assertion.repository=='%s'", repo)
+			}
+			conditions = append(conditions, fmt.Sprintf("(%s)", strings.Join(trustedConditions, " || ")))
+		}
+	}
+
+	// Add branch restrictions
+	if len(config.AllowedBranches) > 0 {
+		branchConditions := make([]string, len(config.AllowedBranches))
+		for i, branch := range config.AllowedBranches {
+			// Support wildcard patterns
+			if strings.Contains(branch, "*") {
+				branchConditions[i] = fmt.Sprintf("assertion.ref.matches('refs/heads/%s')", strings.ReplaceAll(branch, "*", ".*"))
+			} else {
+				branchConditions[i] = fmt.Sprintf("assertion.ref=='refs/heads/%s'", branch)
+			}
+		}
+		conditions = append(conditions, fmt.Sprintf("(%s)", strings.Join(branchConditions, " || ")))
+	}
+
+	// Add tag restrictions
+	if len(config.AllowedTags) > 0 {
+		tagConditions := make([]string, len(config.AllowedTags))
+		for i, tag := range config.AllowedTags {
+			// Support wildcard patterns and semantic versioning
+			if strings.Contains(tag, "*") {
+				tagConditions[i] = fmt.Sprintf("assertion.ref.matches('refs/tags/%s')", strings.ReplaceAll(tag, "*", ".*"))
+			} else {
+				tagConditions[i] = fmt.Sprintf("assertion.ref=='refs/tags/%s'", tag)
+			}
+		}
+		conditions = append(conditions, fmt.Sprintf("(%s)", strings.Join(tagConditions, " || ")))
+	}
+
+	// Add pull request conditions with enhanced security
+	if config.AllowPullRequests {
+		prConditions := []string{
+			"assertion.ref.startsWith('refs/pull/')",
+			"has(assertion.pull_request)", // Ensure PR claim exists
+		}
+
+		// Ensure PR is targeting allowed branches if branch restrictions exist
+		if len(config.AllowedBranches) > 0 {
+			baseBranchConditions := make([]string, len(config.AllowedBranches))
+			for i, branch := range config.AllowedBranches {
+				baseBranchConditions[i] = fmt.Sprintf("assertion.base_ref=='refs/heads/%s'", branch)
+			}
+			prConditions = append(prConditions, fmt.Sprintf("(%s)", strings.Join(baseBranchConditions, " || ")))
+		}
+
+		// Add PR security conditions if GitHub OIDC is configured
+		if config.GitHubOIDC != nil && config.GitHubOIDC.BlockForkedRepos {
+			prConditions = append(prConditions, fmt.Sprintf("assertion.repository_owner=='%s'", strings.Split(config.Repository, "/")[0]))
+		}
+
+		conditions = append(conditions, fmt.Sprintf("(%s)", strings.Join(prConditions, " && ")))
+	}
+
+	// Add environment-based conditions (for production deployments)
+	conditions = append(conditions, "has(assertion.environment) == false || assertion.environment in ['', 'production', 'staging']")
+
+	// Add time-based conditions (optional - prevent very old tokens)
+	conditions = append(conditions, "request.time < timestamp(assertion.exp)")
+
+	// Combine all conditions with AND logic
+	return strings.Join(conditions, " && ")
+}
+
+// executeIAMBinding executes the actual IAM policy binding using gcloud CLI
+func (c *Client) executeIAMBinding(serviceAccountEmail, member, role string, condition *IAMCondition) error {
+	logger := c.logger.WithField("function", "executeIAMBinding")
+	logger.Debug("Executing IAM policy binding",
+		"service_account", serviceAccountEmail,
+		"member", member,
+		"role", role,
+		"condition_title", condition.Title)
+
+	// Build gcloud command
+	args := []string{
+		"iam", "service-accounts", "add-iam-policy-binding", serviceAccountEmail,
+		"--project", c.ProjectID,
+		"--member", member,
+		"--role", role,
+		"--condition", fmt.Sprintf("title=%s,description=%s,expression=%s",
+			condition.Title, condition.Description, condition.Expression),
+		"--format", "json",
+	}
+
+	cmd := exec.Command("gcloud", args...)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		// Check for common errors and provide helpful suggestions
+		outputStr := string(output)
+		if strings.Contains(outputStr, "already exists") {
+			logger.Info("IAM binding already exists, skipping", "role", role)
+			return nil
+		}
+		if strings.Contains(outputStr, "Invalid expression") {
+			return errors.NewGCPError(
+				fmt.Sprintf("Invalid CEL expression in IAM condition: %s", err),
+				"CEL Expression:",
+				condition.Expression,
+				"",
+				"Common issues:",
+				"- Check string quoting and escaping",
+				"- Verify assertion field names are correct",
+				"- Ensure logical operators are properly formatted")
+		}
+		return errors.WrapError(err, errors.ErrorTypeGCP, "IAM_BINDING_FAILED",
+			fmt.Sprintf("Failed to create IAM binding: %s", outputStr))
+	}
+
+	logger.Debug("IAM policy binding executed successfully", "role", role)
+	return nil
+}
+
+// RemoveServiceAccountWorkloadIdentityBinding removes IAM bindings for workload identity
+func (c *Client) RemoveServiceAccountWorkloadIdentityBinding(config *WorkloadIdentityConfig) error {
+	logger := c.logger.WithField("function", "RemoveServiceAccountWorkloadIdentityBinding")
+	logger.Info("Removing service account workload identity bindings",
+		"service_account", config.ServiceAccountEmail,
+		"repository", config.Repository)
+
+	if config.ServiceAccountEmail == "" {
+		return errors.NewValidationError("Service account email is required")
+	}
+
+	bindingConfig := &IAMBindingConfig{
+		ServiceAccountEmail: config.ServiceAccountEmail,
+		PoolID:              config.PoolID,
+		ProviderID:          config.ProviderID,
+		Repository:          config.Repository,
+	}
+
+	// Remove service account token creator binding
+	member := c.buildPrincipalSetMember(bindingConfig)
+	if err := c.removeIAMBinding(config.ServiceAccountEmail, member, "roles/iam.serviceAccountTokenCreator"); err != nil {
+		logger.Warn("Failed to remove service account token creator binding", "error", err)
+	}
+
+	// Remove legacy workload identity user binding
+	legacyMember := fmt.Sprintf("principalSet://iam.googleapis.com/projects/%s/locations/global/workloadIdentityPools/%s/attribute.repository/%s",
+		c.ProjectID, config.PoolID, config.Repository)
+	if err := c.removeIAMBinding(config.ServiceAccountEmail, legacyMember, "roles/iam.workloadIdentityUser"); err != nil {
+		logger.Warn("Failed to remove legacy workload identity user binding", "error", err)
+	}
+
+	logger.Info("Service account workload identity bindings removed successfully",
+		"service_account", config.ServiceAccountEmail,
+		"repository", config.Repository)
+
+	return nil
+}
+
+// removeIAMBinding removes an IAM policy binding
+func (c *Client) removeIAMBinding(serviceAccountEmail, member, role string) error {
+	logger := c.logger.WithField("function", "removeIAMBinding")
+	logger.Debug("Removing IAM policy binding",
+		"service_account", serviceAccountEmail,
+		"member", member,
+		"role", role)
+
+	cmd := exec.Command("gcloud", "iam", "service-accounts", "remove-iam-policy-binding", serviceAccountEmail,
+		"--project", c.ProjectID,
+		"--member", member,
+		"--role", role,
+		"--all", // Remove all matching bindings
+		"--format", "json")
+
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		// Check if binding doesn't exist (not an error)
+		if strings.Contains(string(output), "NOT_FOUND") || strings.Contains(string(output), "not found") {
+			logger.Debug("IAM binding not found, nothing to remove", "role", role)
+			return nil
+		}
+		return errors.WrapError(err, errors.ErrorTypeGCP, "IAM_BINDING_REMOVE_FAILED",
+			fmt.Sprintf("Failed to remove IAM binding: %s", string(output)))
+	}
+
+	logger.Debug("IAM policy binding removed successfully", "role", role)
+	return nil
+}
+
+// ListServiceAccountWorkloadIdentityBindings lists all workload identity bindings for a service account
+func (c *Client) ListServiceAccountWorkloadIdentityBindings(serviceAccountEmail string) ([]WorkloadIdentityBinding, error) {
+	logger := c.logger.WithField("function", "ListServiceAccountWorkloadIdentityBindings")
+	logger.Debug("Listing workload identity bindings", "service_account", serviceAccountEmail)
+
+	cmd := exec.Command("gcloud", "iam", "service-accounts", "get-iam-policy", serviceAccountEmail,
+		"--project", c.ProjectID,
+		"--format", "json")
+
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return nil, errors.WrapError(err, errors.ErrorTypeGCP, "IAM_POLICY_GET_FAILED",
+			fmt.Sprintf("Failed to get IAM policy for service account: %s", string(output)))
+	}
+
+	var policy IAMPolicy
+	if err := json.Unmarshal(output, &policy); err != nil {
+		return nil, errors.WrapError(err, errors.ErrorTypeGCP, "IAM_POLICY_PARSE_FAILED",
+			"Failed to parse IAM policy")
+	}
+
+	var bindings []WorkloadIdentityBinding
+	for _, binding := range policy.Bindings {
+		// Look for workload identity-related roles and members
+		if c.isWorkloadIdentityRole(binding.Role) {
+			for _, member := range binding.Members {
+				if c.isWorkloadIdentityMember(member) {
+					wfBinding := WorkloadIdentityBinding{
+						Role:       binding.Role,
+						Member:     member,
+						Condition:  binding.Condition,
+						Repository: c.extractRepositoryFromMember(member),
+						PoolID:     c.extractPoolIDFromMember(member),
+						ProviderID: c.extractProviderIDFromMember(member),
+					}
+					bindings = append(bindings, wfBinding)
+				}
+			}
+		}
+	}
+
+	logger.Debug("Workload identity bindings listed", "count", len(bindings))
+	return bindings, nil
+}
+
+// WorkloadIdentityBinding represents a workload identity IAM binding
+type WorkloadIdentityBinding struct {
+	Role       string        `json:"role"`
+	Member     string        `json:"member"`
+	Condition  *IAMCondition `json:"condition,omitempty"`
+	Repository string        `json:"repository"`
+	PoolID     string        `json:"pool_id"`
+	ProviderID string        `json:"provider_id,omitempty"`
+}
+
+// IAMPolicy represents an IAM policy
+type IAMPolicy struct {
+	Version  int          `json:"version"`
+	Bindings []IAMBinding `json:"bindings"`
+	Etag     string       `json:"etag"`
+}
+
+// IAMBinding represents an IAM policy binding
+type IAMBinding struct {
+	Role      string        `json:"role"`
+	Members   []string      `json:"members"`
+	Condition *IAMCondition `json:"condition,omitempty"`
+}
+
+// isWorkloadIdentityRole checks if a role is related to workload identity
+func (c *Client) isWorkloadIdentityRole(role string) bool {
+	workloadIdentityRoles := []string{
+		"roles/iam.serviceAccountTokenCreator",
+		"roles/iam.workloadIdentityUser",
+		"roles/iam.serviceAccountUser",
+	}
+	for _, wiRole := range workloadIdentityRoles {
+		if role == wiRole {
+			return true
+		}
+	}
+	return false
+}
+
+// isWorkloadIdentityMember checks if a member is a workload identity principal
+func (c *Client) isWorkloadIdentityMember(member string) bool {
+	return strings.Contains(member, "principalSet://iam.googleapis.com") &&
+		strings.Contains(member, "workloadIdentityPools")
+}
+
+// extractRepositoryFromMember extracts repository from a workload identity member string
+func (c *Client) extractRepositoryFromMember(member string) string {
+	// Look for attribute.repository/ pattern
+	if strings.Contains(member, "attribute.repository/") {
+		start := strings.Index(member, "attribute.repository/") + len("attribute.repository/")
+		return member[start:]
+	}
+	return ""
+}
+
+// extractPoolIDFromMember extracts pool ID from a workload identity member string
+func (c *Client) extractPoolIDFromMember(member string) string {
+	// Look for workloadIdentityPools/ pattern
+	if strings.Contains(member, "workloadIdentityPools/") {
+		start := strings.Index(member, "workloadIdentityPools/") + len("workloadIdentityPools/")
+		end := strings.Index(member[start:], "/")
+		if end == -1 {
+			return member[start:]
+		}
+		return member[start : start+end]
+	}
+	return ""
+}
+
+// extractProviderIDFromMember extracts provider ID from a workload identity member string
+func (c *Client) extractProviderIDFromMember(member string) string {
+	// Look for providers/ pattern
+	if strings.Contains(member, "/providers/") {
+		start := strings.Index(member, "/providers/") + len("/providers/")
+		end := strings.Index(member[start:], "/")
+		if end == -1 {
+			return member[start:]
+		}
+		return member[start : start+end]
+	}
+	return ""
+}
+
+// ValidateIAMConditionExpression validates a CEL expression for IAM conditions
+func (c *Client) ValidateIAMConditionExpression(expression string) error {
+	return ValidateIAMConditionExpressionStandalone(expression)
+}
+
+// ValidateIAMConditionExpressionStandalone validates a CEL expression for IAM conditions without requiring a client
+func ValidateIAMConditionExpressionStandalone(expression string) error {
+	// Basic syntax validation
+	if expression == "" {
+		return errors.NewValidationError("IAM condition expression cannot be empty")
+	}
+
+	// Check for common syntax issues
+	invalidPatterns := []struct {
+		pattern string
+		message string
+	}{
+		{"==''", "Empty string comparison without proper escaping"},
+		{"='", "Single equals with quote (should be double equals)"},
+		{"= '", "Single equals with space and quote (should be double equals)"},
+		{" = ", "Single equals with spaces (should be double equals)"},
+		{"&&&&", "Multiple logical AND operators"},
+		{"||||", "Multiple logical OR operators"},
+	}
+
+	for _, pattern := range invalidPatterns {
+		if strings.Contains(expression, pattern.pattern) {
+			return errors.NewValidationError(
+				fmt.Sprintf("Invalid CEL expression syntax: %s", pattern.message),
+				"Common fixes:",
+				"- Use '==' for equality comparison",
+				"- Use '&&' for logical AND",
+				"- Use '||' for logical OR",
+				"- Properly quote string values")
+		}
+	}
+
+	// Check for required assertion fields
+	requiredFields := []string{"assertion.repository"}
+	for _, field := range requiredFields {
+		if !strings.Contains(expression, field) {
+			return errors.NewValidationError(
+				fmt.Sprintf("IAM condition expression must include %s", field),
+				"This field is required for workload identity security")
+		}
+	}
 
 	return nil
 }

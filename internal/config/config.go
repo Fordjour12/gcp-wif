@@ -7,11 +7,13 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"regexp"
 	"strings"
 	"time"
 
 	"github.com/Fordjour12/gcp-wif/internal/errors"
+	"github.com/Fordjour12/gcp-wif/internal/github"
 	"github.com/Fordjour12/gcp-wif/internal/logging"
 )
 
@@ -36,7 +38,7 @@ type Config struct {
 	CloudRun CloudRunConfig `json:"cloud_run,omitempty"`
 
 	// GitHub Actions workflow configuration
-	Workflow WorkflowConfig `json:"workflow,omitempty"`
+	Workflow github.WorkflowConfig `json:"workflow,omitempty"`
 
 	// Advanced configuration
 	Advanced AdvancedConfig `json:"advanced,omitempty"`
@@ -90,19 +92,6 @@ type CloudRunConfig struct {
 	MemoryLimit  string            `json:"memory_limit,omitempty"`
 	MaxInstances int               `json:"max_instances,omitempty"`
 	MinInstances int               `json:"min_instances,omitempty"`
-}
-
-// WorkflowConfig holds GitHub Actions workflow configuration
-type WorkflowConfig struct {
-	Name           string            `json:"name,omitempty"`
-	Filename       string            `json:"filename,omitempty"`
-	Path           string            `json:"path,omitempty"`
-	Triggers       []string          `json:"triggers,omitempty"`
-	Environment    string            `json:"environment,omitempty"`
-	Secrets        map[string]string `json:"secrets,omitempty"`
-	Variables      map[string]string `json:"variables,omitempty"`
-	DockerRegistry string            `json:"docker_registry,omitempty"`
-	DockerImage    string            `json:"docker_image,omitempty"`
 }
 
 // AdvancedConfig holds advanced configuration options
@@ -182,12 +171,7 @@ func DefaultConfig() *Config {
 			MaxInstances: 100,
 			MinInstances: 0,
 		},
-		Workflow: WorkflowConfig{
-			Name:     "Deploy to Cloud Run",
-			Filename: "deploy.yml",
-			Path:     ".github/workflows",
-			Triggers: []string{"push", "pull_request"},
-		},
+		Workflow: *github.DefaultWorkflowConfig(),
 		Advanced: AdvancedConfig{
 			BackupExisting:   true,
 			CleanupOnFailure: true,
@@ -381,18 +365,47 @@ func (c *Config) SetDefaults() {
 		}
 	}
 
-	// Set workflow defaults
+	// Set workflow defaults - github.DefaultWorkflowConfig() provides comprehensive defaults.
+	// These ensure that if a config is loaded with a workflow section that is missing these basic fields,
+	// they get populated. Otherwise, the more specific defaults from github.WorkflowConfig apply.
 	if c.Workflow.Name == "" {
-		c.Workflow.Name = "Deploy to Cloud Run"
+		c.Workflow.Name = "Deploy to Cloud Run via WIF"
 	}
 	if c.Workflow.Filename == "" {
-		c.Workflow.Filename = "deploy.yml"
+		c.Workflow.Filename = "deploy-wif.yml"
 	}
 	if c.Workflow.Path == "" {
 		c.Workflow.Path = ".github/workflows"
 	}
-	if len(c.Workflow.Triggers) == 0 {
-		c.Workflow.Triggers = []string{"push"}
+
+	// Populate workflow fields from main configuration
+	c.Workflow.ProjectID = c.Project.ID
+	c.Workflow.ProjectNumber = c.Project.Number
+	c.Workflow.ServiceAccountEmail = c.GetServiceAccountEmail()
+	c.Workflow.WorkloadIdentityProvider = c.GetWorkloadIdentityProviderName()
+	c.Workflow.Repository = c.GetRepoFullName()
+	c.Workflow.Region = c.Project.Region
+	if c.CloudRun.ServiceName != "" {
+		c.Workflow.ServiceName = c.CloudRun.ServiceName
+		c.Workflow.Registry = c.CloudRun.Registry
+		c.Workflow.Port = c.CloudRun.Port
+		c.Workflow.CPULimit = c.CloudRun.CPULimit
+		c.Workflow.MemoryLimit = c.CloudRun.MemoryLimit
+		c.Workflow.MaxInstances = c.CloudRun.MaxInstances
+		c.Workflow.MinInstances = c.CloudRun.MinInstances
+	}
+
+	// Check if the Triggers struct appears uninitialized.
+	// github.DefaultWorkflowConfig sets specific defaults for Push, PullRequest, Manual etc.
+	// This is a fallback if the WorkflowConfig was loaded from a file that zeroed out the Triggers.
+	if !c.Workflow.Triggers.Push.Enabled &&
+		!c.Workflow.Triggers.PullRequest.Enabled &&
+		!c.Workflow.Triggers.Manual &&
+		!c.Workflow.Triggers.Release &&
+		len(c.Workflow.Triggers.Schedule) == 0 {
+		// Apply a very basic trigger default if none seem to be set.
+		c.Workflow.Triggers.Push.Enabled = true
+		c.Workflow.Triggers.Push.Branches = []string{"main"}
 	}
 
 	// Set advanced defaults
@@ -607,11 +620,31 @@ func (c *Config) validateCloudRun(result *ValidationResult) {
 
 // validateWorkflow validates workflow configuration
 func (c *Config) validateWorkflow(result *ValidationResult) {
+	// Basic validation for filename directly in this config struct if needed
 	if c.Workflow.Filename != "" && !strings.HasSuffix(c.Workflow.Filename, ".yml") && !strings.HasSuffix(c.Workflow.Filename, ".yaml") {
 		result.Warnings = append(result.Warnings, ValidationWarning{
 			Field:   "workflow.filename",
-			Message: "Workflow filename should end with .yml or .yaml",
+			Message: "Workflow filename should ideally end with .yml or .yaml for GitHub Actions.",
 		})
+	}
+
+	// Delegate to the comprehensive validation within github.WorkflowConfig
+	if err := c.Workflow.ValidateConfig(); err != nil {
+		// Attempt to cast to errors.CustomError to extract details
+		if validationErr, ok := err.(*errors.CustomError); ok && validationErr.Type == errors.ErrorTypeValidation {
+			result.Errors = append(result.Errors, ValidationError{
+				Field:   "workflow",
+				Message: fmt.Sprintf("GitHub Workflow configuration is invalid: %s", err.Error()),
+				Code:    string(validationErr.Code),
+			})
+		} else {
+			// For other error types, or if casting fails, add a general error
+			result.Errors = append(result.Errors, ValidationError{
+				Field:   "workflow",
+				Message: fmt.Sprintf("GitHub Workflow configuration is invalid: %s", err.Error()),
+				Code:    "WORKFLOW_VALIDATION_FAILED",
+			})
+		}
 	}
 }
 
@@ -838,33 +871,113 @@ func (c *Config) MergeConfig(other *Config) error {
 	if other.Workflow.Path != "" {
 		c.Workflow.Path = other.Workflow.Path
 	}
-	if len(other.Workflow.Triggers) > 0 {
+	if other.Workflow.Description != "" {
+		c.Workflow.Description = other.Workflow.Description
+	}
+	if other.Workflow.Author != "" {
+		c.Workflow.Author = other.Workflow.Author
+	}
+	if other.Workflow.Version != "" {
+		c.Workflow.Version = other.Workflow.Version
+	}
+
+	// Merge Triggers (replace if other.Workflow.Triggers is substantially different from a zero/default struct)
+	if other.Workflow.Triggers.Push.Enabled || other.Workflow.Triggers.PullRequest.Enabled ||
+		other.Workflow.Triggers.Manual || other.Workflow.Triggers.Release ||
+		len(other.Workflow.Triggers.Schedule) > 0 ||
+		len(other.Workflow.Triggers.Push.Branches) > 0 || len(other.Workflow.Triggers.PullRequest.Branches) > 0 {
 		c.Workflow.Triggers = other.Workflow.Triggers
 	}
-	if other.Workflow.Environment != "" {
-		c.Workflow.Environment = other.Workflow.Environment
+
+	// GCP Config part of workflow (ProjectID, SA Email, etc. are usually derived or top-level in main config)
+	// These are part of github.WorkflowConfig but often set from main Config during generation
+	if other.Workflow.ProjectID != "" { // Merging these directly, though they might be overridden by main config context
+		c.Workflow.ProjectID = other.Workflow.ProjectID
+	}
+	if other.Workflow.ProjectNumber != "" {
+		c.Workflow.ProjectNumber = other.Workflow.ProjectNumber
+	}
+	if other.Workflow.ServiceAccountEmail != "" {
+		c.Workflow.ServiceAccountEmail = other.Workflow.ServiceAccountEmail
+	}
+	if other.Workflow.WorkloadIdentityProvider != "" {
+		c.Workflow.WorkloadIdentityProvider = other.Workflow.WorkloadIdentityProvider
+	}
+
+	// Repository config part of workflow
+	if other.Workflow.Repository != "" {
+		c.Workflow.Repository = other.Workflow.Repository
+	}
+	if len(other.Workflow.Branches) > 0 {
+		c.Workflow.Branches = other.Workflow.Branches
+	}
+	if len(other.Workflow.Tags) > 0 {
+		c.Workflow.Tags = other.Workflow.Tags
+	}
+
+	// Cloud Run config part of workflow (matches some fields from main CloudRunConfig)
+	if other.Workflow.ServiceName != "" {
+		c.Workflow.ServiceName = other.Workflow.ServiceName
+	}
+	if other.Workflow.Region != "" {
+		c.Workflow.Region = other.Workflow.Region
+	}
+	if other.Workflow.Registry != "" { // This is the image registry for docker
+		c.Workflow.Registry = other.Workflow.Registry
+	}
+	if len(other.Workflow.EnvVars) > 0 {
+		c.Workflow.EnvVars = other.Workflow.EnvVars // Replace map
 	}
 	if len(other.Workflow.Secrets) > 0 {
-		if c.Workflow.Secrets == nil {
-			c.Workflow.Secrets = make(map[string]string)
-		}
-		for k, v := range other.Workflow.Secrets {
-			c.Workflow.Secrets[k] = v
-		}
+		c.Workflow.Secrets = other.Workflow.Secrets // Replace map
 	}
-	if len(other.Workflow.Variables) > 0 {
-		if c.Workflow.Variables == nil {
-			c.Workflow.Variables = make(map[string]string)
-		}
-		for k, v := range other.Workflow.Variables {
-			c.Workflow.Variables[k] = v
-		}
+	if other.Workflow.CPULimit != "" {
+		c.Workflow.CPULimit = other.Workflow.CPULimit
 	}
-	if other.Workflow.DockerRegistry != "" {
-		c.Workflow.DockerRegistry = other.Workflow.DockerRegistry
+	if other.Workflow.MemoryLimit != "" {
+		c.Workflow.MemoryLimit = other.Workflow.MemoryLimit
 	}
-	if other.Workflow.DockerImage != "" {
-		c.Workflow.DockerImage = other.Workflow.DockerImage
+	if other.Workflow.MaxInstances != 0 { // MaxInstances is int
+		c.Workflow.MaxInstances = other.Workflow.MaxInstances
+	}
+	if other.Workflow.MinInstances != 0 { // MinInstances is int
+		c.Workflow.MinInstances = other.Workflow.MinInstances
+	}
+	if other.Workflow.Port != 0 { // Port is int
+		c.Workflow.Port = other.Workflow.Port
+	}
+
+	// Build configuration part of workflow
+	if other.Workflow.DockerfilePath != "" {
+		c.Workflow.DockerfilePath = other.Workflow.DockerfilePath
+	}
+	if other.Workflow.BuildContext != "" {
+		c.Workflow.BuildContext = other.Workflow.BuildContext
+	}
+	if len(other.Workflow.BuildArgs) > 0 {
+		c.Workflow.BuildArgs = other.Workflow.BuildArgs // Replace map
+	}
+	if len(other.Workflow.BuildSecrets) > 0 {
+		c.Workflow.BuildSecrets = other.Workflow.BuildSecrets // Replace map
+	}
+	if len(other.Workflow.CacheFromImages) > 0 {
+		c.Workflow.CacheFromImages = other.Workflow.CacheFromImages // Replace slice
+	}
+	if other.Workflow.MultiPlatform { // Check boolean
+		c.Workflow.MultiPlatform = other.Workflow.MultiPlatform
+	}
+	if len(other.Workflow.Platforms) > 0 {
+		c.Workflow.Platforms = other.Workflow.Platforms // Replace slice
+	}
+
+	// Merge SecurityConfig (replace if other.Workflow.Security is not its zero value)
+	if !reflect.DeepEqual(other.Workflow.Security, github.SecurityConfig{}) {
+		c.Workflow.Security = other.Workflow.Security
+	}
+
+	// Merge AdvancedWorkflowConfig (replace if other.Workflow.Advanced is not its zero value)
+	if !reflect.DeepEqual(other.Workflow.Advanced, github.AdvancedWorkflowConfig{}) {
+		c.Workflow.Advanced = other.Workflow.Advanced
 	}
 
 	// Merge advanced configuration
