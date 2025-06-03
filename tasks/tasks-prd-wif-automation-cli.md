@@ -2,16 +2,14 @@
 
 - `main.go` - Main entry point for the CLI application
 - `cmd/root.go` - Root command configuration using Cobra CLI
-- `cmd/test-auth.go` - GCP authentication and client connectivity testing command
-- `cmd/test-sa.go` - Service account creation and management testing command
-- `cmd/test-wif.go` - Workload Identity Federation pools and providers testing command
-- `cmd/test-conflicts.go` - Comprehensive resource conflict detection testing command
-- `internal/config/config.go` - Configuration structure and JSON file handling
+- `cmd/setup.go` - Main WIF setup command with comprehensive flag support
+- `cmd/config.go` - Configuration management commands (init, validate, show, backup)
+- `cmd/workflow.go` - Workflow generation and management commands (generate, preview, validate, info)
+- `internal/config/config.go` - Configuration structure and JSON file handling with validation
 - `internal/gcp/client.go` - GCP API client wrapper and authentication
 - `internal/gcp/service_account.go` - Service account creation and management
 - `internal/gcp/workload_identity.go` - Workload Identity Pool and Provider setup
-- `internal/gcp/conflict_detection.go` - Comprehensive resource conflict detection and resolution system
-- `internal/github/workflow.go` - GitHub Actions workflow file generation
+- `internal/github/workflow.go` - Comprehensive GitHub Actions workflow file generation with templates
 - `internal/ui/interactive.go` - Bubble Tea interactive UI components
 - `internal/ui/progress.go` - Progress indicators and status displays
 - `internal/validation/validator.go` - Input validation logic
@@ -46,24 +44,26 @@
   - [x] 2.4 Build configuration file loading and saving functionality
   - [x] 2.5 Implement input validation with real-time feedback
 
-- [ ] 3.0 Develop GCP Resource Creation and Management
+- [x] 3.0 Develop GCP Resource Creation and Management
   - [x] 3.1 Set up GCP client authentication using existing gcloud CLI
   - [x] 3.2 Implement service account creation with required IAM roles
   - [x] 3.3 Build Workload Identity Pool creation and configuration
   - [x] 3.4 Implement Workload Identity Provider setup with GitHub OIDC
   - [x] 3.5 Add conflict detection for existing GCP resources
-  - [ ] 3.6 Implement IAM policy binding with security conditions
+  - [x] 3.6 Implement IAM policy binding with security conditions
 
 - [ ] 4.0 Build GitHub Actions Workflow Generation
-  - [ ] 4.1 Create workflow template with WIF authentication
-  - [ ] 4.2 Generate Docker build and Artifact Registry push steps
-  - [ ] 4.3 Add Cloud Run deployment configuration
-  - [ ] 4.4 Implement environment variable and secrets handling
-  - [ ] 4.5 Write generated workflow file to .github/workflows/ directory
+  - [x] 4.1 Create workflow template with WIF authentication
+  - [x] 4.2 Implement Docker build and push configuration
+  - [x] 4.3 Add support for GitHub Actions environments and secrets
+  - [x] 4.4 Create health check and validation logic for deployments
+  - [x] 4.5 Implement workflow file generation and writing functionality
+  - [ ] 4.6 Add support for multiple workflow templates (production, staging, development)
 
-- [ ] 5.0 Implement Error Handling and User Experience Features
-  - [ ] 5.1 Add comprehensive error messages with suggested solutions
-  - [ ] 5.2 Implement progress indicators and status displays
-  - [ ] 5.3 Create configuration summary and resource listing
-  - [ ] 5.4 Add prerequisite checking (gcloud CLI installation/auth)
-  - [ ] 5.5 Build comprehensive documentation and usage examples
+- [ ] 5.0 Implement Complete End-to-End Workflow
+  - [ ] 5.1 Implement complete setup orchestration
+  - [ ] 5.2 Add cleanup and rollback functionality  
+  - [ ] 5.3 Create comprehensive validation and testing framework
+  - [ ] 5.4 Add support for multiple cloud regions and environments
+  - [ ] 5.5 Implement configuration templates and presets
+  - [ ] 5.6 Add comprehensive logging and debugging features

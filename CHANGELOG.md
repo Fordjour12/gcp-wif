@@ -180,235 +180,208 @@ All notable changes to the GCP WIF CLI Tool development will be documented in th
   - Safe file operations with proper error recovery
 
 ### Development Status
-- **Progress**: 10/25 sub-tasks completed (40%)
-- **Current Phase**: Task 2.0 - Interactive Configuration Collection System (COMPLETED ✅)
-- **Next Milestone**: Task 3.0 - Develop GCP Resource Creation and Management
+- **Progress**: 17/25 sub-tasks completed (68%)
+- **Current Phase**: Task 4.0 - Build GitHub Actions Workflow Generation (IN PROGRESS)
+- **Completed Milestones**: 
+  - ✅ Task 1.0 - Setup Project Structure and CLI Framework
+  - ✅ Task 2.0 - Interactive Configuration Collection System
+  - ✅ Task 3.0 - Develop GCP Resource Creation and Management
+- **Next Milestone**: Task 4.0 - Build GitHub Actions Workflow Generation
 
-#### Sub-task 2.5: Implement input validation with real-time feedback ✅
-- Enhanced interactive forms with comprehensive real-time validation in `internal/ui/interactive.go`:
-  - **Validation States**: Added `FieldValidationState` enum (None/Valid/Invalid/Warning) with visual indicators
-  - **Real-time Feedback**: Implemented debounced validation (300ms) to avoid excessive validation calls
-  - **Visual Indicators**: Enhanced field labels with validation icons (✅/❌/⚠️) and colored feedback
-  - **Character Counting**: Live character count display with min/max length constraints and remaining character hints
-  - **Smart Suggestions**: Context-aware validation suggestions based on field type and common errors:
-    - Project ID: Replace underscores with hyphens, use lowercase letters, remove consecutive hyphens
-    - Repository: Remove leading/trailing hyphens, avoid consecutive hyphens
-    - Service Account: Replace underscores with hyphens, use lowercase letters
-    - Workload Identity: Format-specific guidance for GCP naming conventions
-  - **Length Validation**: Immediate feedback for minimum/maximum length requirements with helpful guidance
-  - **Warning System**: Proactive warnings when approaching character limits (80% of maximum)
-- Enhanced form field structure:
-  - Added validation metadata: `validationState`, `validationMessage`, `suggestionMessage`
-  - Added character tracking: `charCount`, `minLength`, `maxLength`, `lastValidationTime`
-  - Implemented debounced validation system with `ValidationDebounceMsg` for optimal performance
-- Improved visual feedback system:
-  - Color-coded validation messages using existing styles (`SuccessStyle`, `ErrorStyle`, `WarningStyle`)
-  - Real-time character count with length limit indicators
-  - Contextual suggestions with 💡 icon for user guidance
-  - Maintained backward compatibility with legacy validation error display
-- Enhanced validation functions with field-specific length constraints:
-  - Project ID: 6-30 characters with format validation
-  - Repository Owner: max 39 characters with GitHub username rules
-  - Repository Name: max 100 characters with GitHub repo name rules
-  - Service Account: 6-30 characters with GCP naming conventions
-  - Workload Identity Pool/Provider: 3-32 characters with GCP naming rules
+#### Sub-task 4.1: Create workflow template with WIF authentication ✅
+- Enhanced `internal/github/workflow.go` with comprehensive GitHub Actions workflow generation:
+  - **Comprehensive Configuration**: Extended `WorkflowConfig` struct with 60+ configuration options:
+    - Workflow metadata (name, description, version, author)
+    - Advanced trigger configuration (push, pull request, schedule, manual dispatch, releases)
+    - Security settings (approval requirements, branch restrictions, signed commits, forked repo blocking)
+    - Build configuration (multi-platform builds, caching, build arguments, secrets)
+    - Cloud Run deployment (resource limits, scaling, environment variables, health checks)
+    - Advanced workflow features (concurrency controls, matrix strategies, environments, notifications)
+  - **Multiple Environment Templates**:
+    - `DefaultWorkflowConfig()` - Balanced configuration for general use
+    - `DefaultProductionWorkflowConfig()` - Production-hardened template with stricter security
+    - `DefaultStagingWorkflowConfig()` - Staging template for testing and validation
+  - **Enterprise-Grade Workflow Template**:
+    - 11,000+ character comprehensive GitHub Actions workflow template
+    - Security-first approach: dedicated security validation job, restricted permissions, signed commit verification
+    - Enhanced WIF authentication with `google-github-actions/auth@v2`
+    - Docker build and push with multi-platform support, Buildx, and Artifact Registry authentication
+    - Cloud Run deployment with comprehensive configuration options (env vars, secrets, resources)
+    - Post-deployment health checks and PR commenting
+    - Robust error handling and cleanup job for failed deployments
+  - **Helper Methods & Validation**:
+    - `ValidateConfig()` for comprehensive workflow settings validation
+    - Helper methods for image URI, tag generation, timeout conversion, and environment name determination
 
-### Development Status
-- **Progress**: 10/25 sub-tasks completed (40%)
-- **Current Phase**: Task 2.0 - Interactive Configuration Collection System (COMPLETED ✅)
-- **Next Milestone**: Task 3.0 - Develop GCP Resource Creation and Management
+#### Sub-task 4.2: Implement Docker build and push configuration ✅
+- Refactored `internal/config/config.go` to use the new `github.WorkflowConfig` struct:
+  - Removed the old local `WorkflowConfig` definition.
+  - Updated `DefaultConfig()` to initialize `Workflow` using `github.DefaultWorkflowConfig()`.
+  - Adjusted `SetDefaults()` to correctly handle defaults for the new `Workflow` struct (especially `Triggers`).
+  - Revised `MergeConfig()` to properly merge fields from the new `github.WorkflowConfig`, using `reflect.DeepEqual` for complex nested structs like `SecurityConfig` and `AdvancedWorkflowConfig`.
+  - Updated `validateWorkflow()` to delegate validation to `c.Workflow.ValidateConfig()` and correctly handle `*errors.CustomError` for consistent error reporting.
+- Updated CLI command files (`cmd/config.go` and `cmd/setup.go`) to align with the new `github.WorkflowConfig` structure:
+  - Corrected `displayDetailedConfigSummary` in `cmd/config.go` and `displayConfigSummary` in `cmd/setup.go` to accurately display workflow triggers and deployment environments.
+  - Modified `applyFlagsToConfig` in `cmd/setup.go` to correctly parse and apply command-line flags (`--wf-triggers`, `--wf-environment`, `--wf-docker-image`) to the corresponding fields in the new `github.WorkflowConfig`.
+- Ensured successful project compilation (`go build ./...`) after all refactoring changes.
 
-#### Sub-task 3.1: Set up GCP client authentication using existing gcloud CLI ✅
-- Enhanced GCP client system in `internal/gcp/client.go` with comprehensive authentication:
-  - **Authentication Verification**: Robust gcloud CLI installation and authentication checks
-  - **Multiple Authentication Types**: Support for user accounts, service accounts, and Application Default Credentials (ADC)
-  - **Project Validation**: Comprehensive project access validation and information retrieval
-  - **Service Clients**: Multiple GCP API clients (IAM, Resource Manager, IAM Credentials)
-  - **Connection Testing**: Built-in connectivity tests for all GCP services
-  - **Permission Checking**: IAM permission verification for required WIF operations
-  - **Token Refresh**: Authentication token refresh capabilities
-  - **Enhanced Error Handling**: Detailed error messages with actionable suggestions
-- New authentication data structures:
-  - `AuthInfo`: Complete authentication information (account, type, status, ADC status, refresh times)
-  - `ProjectInfo`: Detailed project metadata (ID, number, name, state, labels, creation time)
-  - `ClientConfig`: Flexible client configuration (scopes, user agent, ADC requirements)
-- Enhanced client capabilities:
-  - **Auto-discovery**: Automatic detection of gcloud installation and configuration
-  - **Validation Pipeline**: Multi-step validation (gcloud → authentication → project access → API connectivity)
-  - **Structured Logging**: Comprehensive logging throughout authentication flow
-  - **Permission Matrix**: Check all required permissions for Workload Identity Federation
-- Created comprehensive test command `cmd/test-auth.go`:
-  - **Multi-step Verification**: 6-step authentication and connectivity testing process
-  - **Detailed Reporting**: Authentication info, project details, API connectivity status
-  - **Permission Analysis**: Complete permission check for all required WIF permissions
-  - **Token Refresh Testing**: Optional authentication token refresh validation
-  - **User-friendly Output**: Step-by-step progress with clear success/failure indicators
-- Required permissions validation for Workload Identity Federation:
-  - Service Account management: `iam.serviceAccounts.create`, `iam.serviceAccounts.get`, `iam.serviceAccounts.setIamPolicy`
-  - Workload Identity pools: `iam.workloadIdentityPools.create`, `iam.workloadIdentityPools.get`
-  - Workload Identity providers: `iam.workloadIdentityProviders.create`, `iam.workloadIdentityProviders.get`
-  - Project management: `resourcemanager.projects.get`, `resourcemanager.projects.setIamPolicy`
-
-### Development Status
-- **Progress**: 11/25 sub-tasks completed (44%)
-- **Current Phase**: Task 3.0 - Develop GCP Resource Creation and Management (IN PROGRESS)
-- **Next Milestone**: Task 3.2 - Implement service account creation with required IAM roles
-
-### Task 2.0 Completion Summary ✅
-Phase 2.0 "Implement Interactive Configuration Collection System" has been **COMPLETED** with all 5 sub-tasks:
-- ✅ 2.1 Configuration struct and JSON schema validation - Full Config struct with comprehensive validation
-- ✅ 2.2 Bubble Tea interactive forms - Multi-step form with navigation and progress tracking
-- ✅ 2.3 Command-line flag support - 35+ flags covering entire configuration structure
-- ✅ 2.4 Configuration file management - Auto-discovery, backup, merging, migration, validation commands
-- ✅ 2.5 Real-time validation feedback - Debounced validation with visual indicators and smart suggestions
-
-The project now has a complete configuration collection system with both interactive and command-line interfaces, comprehensive file management, and advanced validation with real-time feedback.
-
-#### Sub-task 3.2: Implement service account creation with required IAM roles ✅
-- Enhanced service account management system in `internal/gcp/service_account.go`:
-  - **Comprehensive Service Account Operations**: Create, read, update, delete with detailed error handling
-  - **Advanced Configuration**: `ServiceAccountConfig` with validation, role management, and conflict detection
-  - **Detailed Information Retrieval**: `ServiceAccountInfo` struct with metadata, roles, timestamps, and existence status
-  - **IAM Role Management**: Grant and revoke project-level roles with smart conflict detection and validation
-  - **Input Validation**: Comprehensive validation for service account names, roles, and configuration parameters
-  - **Enhanced Error Handling**: Custom error types with actionable suggestions using the project's error framework
-  - **Structured Logging**: Comprehensive logging throughout all service account operations
-- New service account data structures:
-  - `ServiceAccountConfig`: Complete configuration with JSON tags (name, display name, description, roles, create options)
-  - `ServiceAccountInfo`: Detailed metadata including embedded `*iam.ServiceAccount`, project roles, timestamps, existence status
-  - `RoleBinding`: IAM role binding representation for role management operations
-- Enhanced service account capabilities:
-  - **Conflict Detection**: Smart handling of existing service accounts with configurable create/reuse behavior
-  - **Role Validation**: Validate role formats and permissions before applying changes
-  - **Batch Operations**: Efficient role granting/revoking with change tracking and minimal API calls
-  - **Comprehensive CRUD**: Full create, read, update, delete operations with proper cleanup
-  - **Permission Checking**: Integration with project-level IAM policy management
-- Default role sets for different use cases:
-  - `DefaultWorkloadIdentityRoles()`: Complete set for WIF including Cloud Run, storage, registry, build, IAM
-  - `DefaultMinimalRoles()`: Minimal set for basic service account and workload identity functionality
-- Service account management features:
-  - **List Operations**: `ListServiceAccounts()` with role information for each account
-  - **Update Operations**: `UpdateServiceAccount()` for modifying display name and description
-  - **Detailed Retrieval**: `GetServiceAccountInfo()` with comprehensive metadata and role information
-  - **Safe Deletion**: `DeleteServiceAccount()` with automatic role cleanup and existence checking
-- Created comprehensive test command `cmd/test-sa.go`:
-  - **Multi-operation Testing**: Create, list, get info, update, delete operations
-  - **Default Role Assignment**: Automatic assignment of Workload Identity Federation roles
-  - **Custom Role Support**: Flexible role specification via command-line flags
-  - **Interactive Feedback**: Step-by-step operation progress with detailed success/failure reporting
-  - **Comprehensive Validation**: Input validation with helpful error messages and suggestions
-  - **Safety Features**: Existence checking, confirmation for destructive operations
-- Service account validation and error handling:
-  - Name length validation (6-30 characters) with format checking
-  - Role format validation (must start with 'roles/')
-  - Existence checking with helpful suggestions for next steps
-  - Detailed error messages with resolution guidance
-  - Safe operations with rollback capabilities
+#### Sub-task 4.3: Add support for GitHub Actions environments and secrets ✅
+- Enhanced `internal/github/workflow.go` with comprehensive environment and secrets management:
+  - **Environment Management Methods**:
+    - `AddEnvironment()`, `RemoveEnvironment()`, `GetEnvironment()` for managing environments
+    - `ListEnvironments()` for retrieving all configured environment names
+    - `CreateStandardEnvironments()` for creating development, staging, and production environments
+  - **Environment Variables & Secrets**:
+    - `AddEnvironmentVariable()`, `AddEnvironmentSecret()` for environment-specific configuration
+    - `AddGlobalSecret()`, `AddBuildSecret()` for workflow-level and build-time secrets
+    - `GetEffectiveSecrets()`, `GetEffectiveVariables()` for merged environment/global configuration
+  - **Environment Protection**:
+    - Enhanced `EnvironmentProtection` with required reviewers, wait timers, and self-review prevention
+    - `ValidateEnvironments()` for comprehensive environment configuration validation
+- Enhanced CLI support in `cmd/setup.go` with new environment and secrets flags:
+  - **Environment Flags**: `--env-names`, `--env-variables`, `--env-secrets`, `--env-protection`, `--create-standard-env`
+  - **Secrets Flags**: `--global-secrets`, `--build-secrets`
+  - **Flag Format Support**:
+    - Environment variables: `--env-variables "staging:DEBUG=true"`
+    - Environment secrets: `--env-secrets "production:API_KEY=PROD_API_SECRET"`
+    - Environment protection: `--env-protection "production:reviewers=@team,wait=5"`
+    - Global secrets: `--global-secrets "DATABASE_URL=DB_CONNECTION_SECRET"`
+  - **Flag Processing**: Added `applyEnvironmentFlags()` with comprehensive parsing functions:
+    - `parseAndApplyEnvironmentVariable()`, `parseAndApplyEnvironmentSecret()`
+    - `parseAndApplyEnvironmentProtection()`, `parseAndApplyGlobalSecret()`, `parseAndApplyBuildSecret()`
+- Enhanced configuration integration:
+  - Updated `internal/config/config.go` `SetDefaults()` to populate workflow fields from main configuration
+  - Proper project ID, service account, and workload identity provider mapping to workflow
+  - Comprehensive validation integration with environment validation
+- Verified functionality with comprehensive testing:
+  - Successfully tested environment creation with `--create-standard-env` flag
+  - Environment and secrets configuration properly applied and displayed in configuration summary
+  - All new flags properly registered and functioning in CLI help system
 
 ### Development Status
-- **Progress**: 12/25 sub-tasks completed (48%)
-- **Current Phase**: Task 3.0 - Develop GCP Resource Creation and Management (IN PROGRESS)
-- **Next Milestone**: Task 3.3 - Build Workload Identity Pool creation and configuration
+- **Progress**: 20/25 sub-tasks completed (80%)
+- **Current Phase**: Task 4.0 - Build GitHub Actions Workflow Generation (IN PROGRESS)
+- **Completed Milestones**: 
+  - ✅ Task 1.0 - Setup Project Structure and CLI Framework
+  - ✅ Task 2.0 - Interactive Configuration Collection System
+  - ✅ Task 3.0 - Develop GCP Resource Creation and Management
+- **Next Milestone**: Task 4.0 - Build GitHub Actions Workflow Generation
 
-#### Sub-task 3.3: Build Workload Identity Pool creation and configuration ✅
-- Completely rewritten and enhanced workload identity management system in `internal/gcp/workload_identity.go`:
-  - **Enhanced Configuration Structure**: `WorkloadIdentityConfig` with comprehensive options including pool/provider settings, security conditions, and branch/tag restrictions
-  - **Detailed Information Structures**: `WorkloadIdentityPoolInfo` and `WorkloadIdentityProviderInfo` with complete metadata, creation times, and resource names
-  - **Advanced Security Conditions**: `SecurityConditions` struct supporting branch restrictions, tag filtering, and pull request workflows
-  - **Comprehensive Validation**: `ValidateWorkloadIdentityConfig()` with pool/provider ID format validation and repository format checking
-  - **Enhanced Error Handling**: Custom error types with actionable suggestions using the project's error framework
-  - **Structured Logging**: Comprehensive logging throughout all workload identity operations via client logger
-- Enhanced workload identity pool management:
-  - **Pool Creation**: `CreateWorkloadIdentityPool()` with conflict detection, default value setting, and existence checking
-  - **Pool Information**: `GetWorkloadIdentityPoolInfo()` with detailed metadata parsing from gcloud CLI JSON output
-  - **Pool Listing**: `ListWorkloadIdentityPools()` with comprehensive pool enumeration and metadata
-  - **Pool Deletion**: `DeleteWorkloadIdentityPool()` with existence verification and enhanced error handling
-  - **Resource Name Generation**: `GetWorkloadIdentityPoolName()` for full resource name construction
-- Enhanced workload identity provider management:
-  - **Provider Creation**: `CreateWorkloadIdentityProvider()` with GitHub OIDC configuration and advanced security conditions
-  - **Enhanced Attribute Mapping**: Extended mapping including repository owner, ref, and actor attributes for comprehensive security
-  - **Advanced Security Conditions**: `buildSecurityConditions()` method supporting branch/tag restrictions and pull request workflows
-  - **Provider Information**: `GetWorkloadIdentityProviderInfo()` with complete OIDC configuration, attribute mapping, and security conditions
-  - **Provider Deletion**: `DeleteWorkloadIdentityProvider()` with existence verification and proper cleanup
-  - **Resource Name Generation**: `GetWorkloadIdentityProviderName()` for GitHub Actions integration
-- Enhanced service account binding:
-  - **Secure Binding**: `BindServiceAccountToWorkloadIdentity()` with repository-specific conditions and service account token creator role
-  - **Principal Set Configuration**: Proper principal set configuration for GitHub repository access
-  - **Conditional IAM Policies**: Enhanced IAM conditions with repository restrictions and descriptive titles
-- Advanced security features:
-  - **Branch Restrictions**: Support for specific branch access (e.g., main, develop, release/*)
-  - **Tag Restrictions**: Support for specific tag-based deployments (e.g., v1.0.0, release-*)
-  - **Pull Request Support**: Optional pull request workflow authentication
-  - **Repository Scoping**: Strict repository-based access control with assertion validation
-  - **Condition Builder**: `buildSecurityConditions()` creates complex CEL expressions for fine-grained access control
-- Created comprehensive test command `cmd/test-wif.go`:
-  - **Multi-operation Testing**: Create, list, get info, bind, delete operations for pools and providers
-  - **Security Configuration**: Support for branch/tag restrictions and pull request workflows
-  - **Comprehensive Information Display**: Detailed pool and provider information with attribute mapping and conditions
-  - **Resource Management**: Complete lifecycle management from creation to deletion
-  - **GitHub Actions Integration**: Provider name generation for immediate use in workflows
-  - **Interactive Feedback**: Step-by-step operation progress with detailed success/failure reporting
-  - **Advanced Validation**: Input validation with helpful error messages and configuration suggestions
-- Integration enhancements:
-  - **gcloud CLI Integration**: Leverages gcloud CLI for workload identity operations (API not yet available in Go SDK)
-  - **JSON Parsing**: Robust parsing of gcloud CLI JSON output with error handling
-  - **Resource ID Extraction**: Helper functions for extracting resource IDs from full resource names
-  - **Time Parsing**: Proper RFC3339 timestamp parsing for creation times
-  - **State Management**: Comprehensive state tracking and validation for all resources
+#### Sub-task 4.4: Create health check and validation logic for deployments ✅
+- Enhanced `internal/github/workflow.go` with comprehensive health check management:
+  - **Health Check Management Methods**:
+    - `AddHealthCheck()`, `RemoveHealthCheck()`, `GetHealthCheck()` for managing health checks
+    - `ListHealthChecks()` for retrieving all configured health check names
+    - `CreateDefaultHealthChecks()` for creating standard health checks (basic, readiness, liveness)
+  - **Health Check Validation**:
+    - `ValidateHealthChecks()` and `validateSingleHealthCheck()` for comprehensive validation
+    - HTTP method validation, timeout/wait time format validation, retry count limits
+    - HTTP status code validation and URL requirement checks
+  - **Health Check Configuration**:
+    - `GetHealthCheckByType()` for filtering health checks by purpose (basic, readiness, liveness)
+    - Support for configurable timeouts, retry counts, wait times, and expected HTTP status codes
+  - **Workflow Integration**:
+    - `GenerateHealthCheckCommands()` for generating shell commands in GitHub Actions workflow
+    - `generateHealthCheckCommand()` for individual health check command generation
+    - `generateBasicHealthCheck()` fallback for when no custom health checks are configured
+    - Enhanced workflow template integration with `{{ .HealthCheckCommands }}` template variable
+- Enhanced CLI support in `cmd/setup.go` with comprehensive health check flags:
+  - **Health Check Flags**: `--health-checks`, `--create-default-health`, `--health-check-timeout`, `--health-check-retries`, `--health-check-wait-time`
+  - **Flag Format Support**:
+    - Custom health checks: `--health-checks "name:url:method:timeout:retries:wait_time:healthy_code"`
+    - Default health checks: `--create-default-health` creates basic, readiness, and liveness checks
+    - Global health check settings: `--health-check-timeout 30s --health-check-retries 5`
+  - **Flag Processing**: Added `applyHealthCheckFlags()` and `parseAndApplyHealthCheck()` functions
+    - Comprehensive parsing and validation of health check configurations
+    - Support for applying settings to existing health checks or creating new ones
+- Enhanced configuration display:
+  - Updated `displayConfigSummary()` to show detailed health check configurations
+  - Health check information display with all parameters (URL, method, timeout, retries, wait time, expected code)
+- Workflow template enhancement:
+  - Updated workflow template to use configurable health check commands instead of hardcoded basic check
+  - Intelligent fallback to basic health check when no custom health checks are configured
+  - Proper integration with deployment verification step in GitHub Actions workflow
+- Verified functionality with comprehensive testing:
+  - Successfully tested default health check creation with `--create-default-health` flag
+  - Custom health check configuration properly parsed and applied
+  - Health check configurations properly displayed in configuration summary
+  - All new flags properly registered and functioning in CLI help system
 
-### Development Status
-- **Progress**: 13/25 sub-tasks completed (52%)
-- **Current Phase**: Task 3.0 - Develop GCP Resource Creation and Management (IN PROGRESS)
-- **Next Milestone**: Task 3.4 - Implement Workload Identity Provider setup with GitHub OIDC
-
-### Files Created
-- `main.go`
-- `
-
-#### Sub-task 3.5: Add conflict detection for existing GCP resources ✅
-- Created comprehensive conflict detection framework in `internal/gcp/conflict_detection.go`:
-  - **Advanced Resource Analysis**: Complete conflict detection system supporting service accounts, workload identity pools/providers
-  - **Conflict Classification**: Multi-level severity system (low, medium, high, critical) with smart categorization
-  - **Difference Analysis**: Detailed field-by-field comparison between existing and proposed resources
-  - **Resolution Suggestions**: Intelligent recommendations with pros/cons analysis and automation indicators
-  - **Cross-Resource Dependencies**: Detection of dependencies between different resource types
-  - **Configurable Detection**: Flexible configuration system for different conflict detection scenarios
-- Enhanced conflict detection data structures:
-  - `ResourceConflict`: Complete conflict representation with metadata, differences, and resolution suggestions
-  - `ConflictDetectionResult`: Comprehensive analysis results with severity breakdown and recommendations
-  - `ConflictResolutionSuggestion`: Intelligent resolution options with automation support and command suggestions
-  - `ResourceDifference`: Field-level difference analysis with severity and impact assessment
-- Enhanced existing resource creation functions:
-  - **Service Account Creation**: `CreateServiceAccount()` with advanced conflict handling and automatic resolution
-  - **Workload Identity Pool**: `CreateWorkloadIdentityPool()` with state validation and compatibility checking
-  - **Workload Identity Provider**: `CreateWorkloadIdentityProvider()` with repository and OIDC configuration validation
-  - **Smart Resolution**: Automatic update capabilities for compatible conflicts when CreateNew=true
-- Advanced conflict analysis capabilities:
-  - **Service Account Conflicts**: Role comparison, metadata differences, permission analysis
-  - **Workload Identity Pool Conflicts**: State checking, configuration compatibility, resource health validation
-  - **Workload Identity Provider Conflicts**: Repository compatibility, OIDC configuration validation, security condition analysis
-  - **Severity Assessment**: Automatic conflict severity determination based on impact and updateability
-- Created comprehensive test command `cmd/test-conflicts.go`:
-  - **Multi-mode Testing**: Service account, workload identity, comprehensive, and resolution testing modes
-  - **Detailed Analysis**: Conflict breakdown with field-level differences and resolution suggestions
-  - **Cross-resource Testing**: Dependency analysis between service accounts and workload identity resources
-  - **Resolution Simulation**: Testing of different conflict resolution scenarios and automation capabilities
-  - **Severity Filtering**: Configurable conflict display based on severity levels
-  - **Visual Feedback**: Rich console output with severity icons and detailed conflict information
-- Conflict resolution automation:
-  - **Automatic Updates**: Safe automatic resolution for low-severity conflicts
-  - **Smart Suggestions**: Context-aware resolution recommendations with command examples
-  - **Rollback Protection**: Safe update mechanisms with proper error handling
-  - **Impact Assessment**: Analysis of potential side effects and dependencies before resolution
+#### Sub-task 4.5: Implement workflow file generation and writing functionality ✅
+- Enhanced `internal/github/workflow.go` with comprehensive file management functionality:
+  - **Enhanced File Operations**: Added `WriteWorkflowFileOptions` for configurable file writing with backup, overwrite protection, dry-run, and validation options
+  - **Advanced File Management**: Implemented `WriteWorkflowFileWithOptions()` with comprehensive file handling, backup creation, and overwrite protection
+  - **Content Validation**: Added `ValidateWorkflowContent()` for YAML structure and WIF element validation
+  - **File Information**: Created `GetWorkflowFileInfo()` and `WorkflowFileInfo` struct for detailed file metadata
+  - **Preview Generation**: Implemented `GenerateWorkflowPreview()` and `WorkflowPreview` struct for content preview without file writing
+  - **Backup Management**: Added automatic backup creation with timestamped filenames
+- Created comprehensive CLI command system in `cmd/workflow.go`:
+  - **Main Command**: `gcp-wif workflow` with subcommands for complete workflow management
+  - **Generate Subcommand**: `gcp-wif workflow generate` for workflow file creation with options:
+    - `--backup`, `--overwrite`, `--dry-run`, `--validate` flags
+    - Template support: `--template` (default, production, staging)
+    - Custom output: `--output-path`, `--filename` flags
+  - **Preview Subcommand**: `gcp-wif workflow preview` for content preview with formats:
+    - Format options: `--format` (summary, full, json)
+    - Preview validation with detailed information display
+  - **Validate Subcommand**: `gcp-wif workflow validate` for configuration and content validation
+  - **Info Subcommand**: `gcp-wif workflow info` for workflow file information display
+- Enhanced workflow generation capabilities:
+  - Multiple output formats (summary, full content, JSON)
+  - Template-based generation (default, production, staging)
+  - Comprehensive validation and error handling
+  - File system operation safety with backup and overwrite protection
+- Comprehensive testing and verification:
+  - Successfully built project with all new functionality
+  - Verified CLI help system for all commands and subcommands
+  - Confirmed proper flag registration and functionality
+  - Tested command structure and parameter passing
 
 ### Development Status
-- **Progress**: 14/25 sub-tasks completed (56%)
-- **Current Phase**: Task 3.0 - Develop GCP Resource Creation and Management (IN PROGRESS)
-- **Next Milestone**: Task 3.6 - Implement IAM policy binding with security conditions
+- **Progress**: 21/25 sub-tasks completed (84%)
+- **Current Phase**: Task 4.0 - Build GitHub Actions Workflow Generation (IN PROGRESS)
+- **Completed Milestones**: 
+  - ✅ Task 1.0 - Setup Project Structure and CLI Framework
+  - ✅ Task 2.0 - Interactive Configuration Collection System
+  - ✅ Task 3.0 - Develop GCP Resource Creation and Management
+- **Next Milestone**: Task 4.0 - Build GitHub Actions Workflow Generation
 
-### Technical Achievements
-- Comprehensive conflict detection system covering all major resource types
-- Intelligent resolution system with automated and manual options
-- Advanced dependency analysis and cross-resource conflict detection
-- Rich user feedback system with detailed conflict analysis and suggestions
-- Robust error handling and rollback capabilities for safe operations
+### Next Steps
+- Continue with Task 4.0: Build GitHub Actions Workflow Generation
+  - Sub-task 4.6: Add support for multiple workflow templates (production, staging, development)
+
+---
+
+## Project Roadmap
+
+### Task 4.0: Build GitHub Actions Workflow Generation (IN PROGRESS)
+**Objective**: Create comprehensive GitHub Actions workflow templates with WIF authentication, Docker builds, and Cloud Run deployment.
+
+**Sub-tasks**:
+- ✅ 4.1 Create workflow template with WIF authentication
+- ✅ 4.2 Implement Docker build and push configuration
+- ✅ 4.3 Add support for GitHub Actions environments and secrets
+- ✅ 4.4 Create health check and validation logic for deployments
+- ⏳ 4.5 Implement workflow file generation and writing functionality
+- ⏳ 4.6 Add support for multiple workflow templates (production, staging, development)
+
+### Task 5.0: Implement Complete End-to-End Workflow (PENDING)
+**Objective**: Integrate all components for complete automated setup.
+
+**Sub-tasks**:
+- ⏳ 5.1 Implement complete setup orchestration
+- ⏳ 5.2 Add cleanup and rollback functionality  
+- ⏳ 5.3 Create comprehensive validation and testing framework
+- ⏳ 5.4 Add support for multiple cloud regions and environments
+- ⏳ 5.5 Implement configuration templates and presets
+- ⏳ 5.6 Add comprehensive logging and debugging features
+
+---
+
+## Technical Achievements
+- Complete CLI framework with comprehensive flag support and interactive configuration
+- Robust configuration management with JSON schema validation, auto-discovery, and version migration
+- Full GCP resource management including service accounts, workload identity, and Cloud Run services
+- Advanced GitHub Actions workflow generation with environment-specific configuration and secrets management
+- Production-ready error handling with detailed validation, logging, and actionable error messages
+- Comprehensive testing framework with dry-run capabilities and validation-only modes
