@@ -206,7 +206,7 @@ func init() {
 	workflowCmd.PersistentFlags().StringVarP(&workflowConfigFile, "config", "c", "", "Configuration file path")
 	workflowCmd.PersistentFlags().StringVar(&workflowOutputPath, "output-path", "", "Workflow output directory path (default: .github/workflows)")
 	workflowCmd.PersistentFlags().StringVar(&workflowFilename, "filename", "", "Workflow filename (default: from config)")
-	workflowCmd.PersistentFlags().StringVar(&workflowTemplate, "template", "", "Workflow template type (default, production, staging)")
+	workflowCmd.PersistentFlags().StringVar(&workflowTemplate, "template", "", "Workflow template type (default, production, staging, development)")
 
 	// Generate command flags
 	workflowGenerateCmd.Flags().BoolVar(&workflowOverwrite, "overwrite", false, "Overwrite existing workflow file")
@@ -439,11 +439,14 @@ func applyWorkflowFlags(cfg *config.Config) error {
 		case "staging":
 			stagingConfig := github.DefaultStagingWorkflowConfig()
 			cfg.Workflow = *stagingConfig
+		case "development", "dev":
+			developmentConfig := github.DefaultDevelopmentWorkflowConfig()
+			cfg.Workflow = *developmentConfig
 		case "default":
 			defaultConfig := github.DefaultWorkflowConfig()
 			cfg.Workflow = *defaultConfig
 		default:
-			return fmt.Errorf("invalid template: %s (use: default, production, staging)", workflowTemplate)
+			return fmt.Errorf("invalid template: %s (use: default, production, staging, development)", workflowTemplate)
 		}
 	}
 

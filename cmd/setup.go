@@ -1,12 +1,14 @@
 package cmd
 
 import (
+	"context"
 	"fmt"
 	"strconv"
 	"strings"
 
 	"github.com/Fordjour12/gcp-wif/internal/config"
 	"github.com/Fordjour12/gcp-wif/internal/errors"
+	"github.com/Fordjour12/gcp-wif/internal/gcp"
 	"github.com/Fordjour12/gcp-wif/internal/github"
 	"github.com/Fordjour12/gcp-wif/internal/logging"
 	"github.com/Fordjour12/gcp-wif/internal/ui"
@@ -244,8 +246,43 @@ func runSetup(cmd *cobra.Command, args []string) error {
 	// Display configuration summary
 	displayConfigSummary(cfg)
 
-	logger.Info("Setup command ready with complete configuration")
-	fmt.Println("✅ Configuration complete! Ready to proceed with Workload Identity Federation setup.")
+	// Handle dry-run mode
+	if cfg.Advanced.DryRun {
+		fmt.Println("\n🔍 Dry run mode - showing what would be executed without making changes")
+		return runDryRunMode(cfg)
+	}
+
+	// Prompt for confirmation unless in non-interactive mode
+	if interactive {
+		fmt.Println("\n❓ Do you want to proceed with the setup? (y/N)")
+		var response string
+		fmt.Scanln(&response)
+		if strings.ToLower(response) != "y" && strings.ToLower(response) != "yes" {
+			fmt.Println("Setup cancelled by user")
+			return nil
+		}
+	}
+
+	// Start orchestrated setup process
+	logger.Info("Starting orchestrated WIF setup")
+	fmt.Println("\n🔧 Starting orchestrated Workload Identity Federation setup...")
+
+	if err := runOrchestration(cfg); err != nil {
+		if cfg.Advanced.CleanupOnFailure {
+			logger.Warn("Setup failed, attempting cleanup", "error", err)
+			fmt.Println("\n🧹 Setup failed, running cleanup...")
+			if cleanupErr := runCleanup(cfg); cleanupErr != nil {
+				logger.Error("Cleanup failed", "error", cleanupErr)
+				fmt.Printf("❌ Cleanup failed: %v\n", cleanupErr)
+			} else {
+				fmt.Println("✅ Cleanup completed successfully")
+			}
+		}
+		return err
+	}
+
+	logger.Info("Workload Identity Federation setup completed successfully")
+	fmt.Println("\n🎉 Workload Identity Federation setup completed successfully!")
 	return nil
 }
 
@@ -1071,4 +1108,360 @@ func displayConfigSummary(cfg *config.Config) {
 		"repository", cfg.GetRepoFullName(),
 		"service_account", cfg.ServiceAccount.Name,
 		"interactive", interactive)
+}
+
+// runDryRunMode shows what would be executed in the setup without making changes
+func runDryRunMode(cfg *config.Config) error {
+	logger := logging.WithField("function", "runDryRunMode")
+	logger.Info("Running dry-run mode", "project_id", cfg.Project.ID)
+
+	fmt.Println("\n📋 Dry Run - Operations that would be performed:")
+	fmt.Println("============================================")
+
+	// 1. Service Account Creation
+	fmt.Printf("1. 🔧 Service Account Creation:\n")
+	fmt.Printf("   • Name: %s\n", cfg.ServiceAccount.Name)
+	fmt.Printf("   • Email: %s@%s.iam.gserviceaccount.com\n", cfg.ServiceAccount.Name, cfg.Project.ID)
+	fmt.Printf("   • Display Name: %s\n", cfg.ServiceAccount.DisplayName)
+	fmt.Printf("   • Description: %s\n", cfg.ServiceAccount.Description)
+	fmt.Printf("   • Roles to Grant: %s\n", strings.Join(cfg.ServiceAccount.Roles, ", "))
+
+	// 2. Workload Identity Pool
+	fmt.Printf("\n2. 🏊 Workload Identity Pool Creation:\n")
+	fmt.Printf("   • Pool ID: %s\n", cfg.WorkloadIdentity.PoolID)
+	fmt.Printf("   • Pool Name: %s\n", cfg.WorkloadIdentity.PoolName)
+	fmt.Printf("   • Repository: %s\n", cfg.GetRepoFullName())
+
+	// 3. Workload Identity Provider
+	fmt.Printf("\n3. 🔗 Workload Identity Provider Creation:\n")
+	fmt.Printf("   • Provider ID: %s\n", cfg.WorkloadIdentity.ProviderID)
+	fmt.Printf("   • Provider Name: %s\n", cfg.WorkloadIdentity.ProviderName)
+	fmt.Printf("   • GitHub OIDC Issuer: https://token.actions.githubusercontent.com\n")
+	fmt.Printf("   • Conditions: %s\n", strings.Join(cfg.WorkloadIdentity.Conditions, "; "))
+
+	// 4. IAM Bindings
+	fmt.Printf("\n4. 🔐 IAM Policy Bindings:\n")
+	fmt.Printf("   • Bind service account to workload identity\n")
+	fmt.Printf("   • Grant roles/iam.serviceAccountTokenCreator\n")
+	fmt.Printf("   • Apply security conditions for repository: %s\n", cfg.GetRepoFullName())
+
+	// 5. Workflow Generation
+	fmt.Printf("\n5. 📄 GitHub Actions Workflow Generation:\n")
+	fmt.Printf("   • Filename: %s\n", cfg.Workflow.Filename)
+	fmt.Printf("   • Path: %s\n", cfg.Workflow.Path)
+	fmt.Printf("   • Full Path: %s\n", cfg.Workflow.GetWorkflowFilePath())
+	fmt.Printf("   • Template: %s\n", cfg.Workflow.Name)
+
+	// 6. Summary
+	fmt.Printf("\n📊 Summary:\n")
+	fmt.Printf("   • Project: %s\n", cfg.Project.ID)
+	fmt.Printf("   • Repository: %s\n", cfg.GetRepoFullName())
+	fmt.Printf("   • Service Account: %s\n", cfg.GetServiceAccountEmail())
+	fmt.Printf("   • WIF Provider: %s\n", cfg.GetWorkloadIdentityProviderName())
+
+	fmt.Println("\n💡 To execute these operations, run without --dry-run flag")
+	return nil
+}
+
+// runOrchestration executes the complete setup orchestration
+func runOrchestration(cfg *config.Config) error {
+	logger := logging.WithField("function", "runOrchestration")
+	logger.Info("Starting WIF orchestration", "project_id", cfg.Project.ID)
+
+	// Initialize GCP client
+	fmt.Println("🔗 Initializing GCP client...")
+	gcpClient, err := initializeGCPClient(cfg)
+	if err != nil {
+		return fmt.Errorf("failed to initialize GCP client: %w", err)
+	}
+
+	// Step 1: Create Service Account
+	fmt.Println("\n1. 🔧 Creating Service Account...")
+	if err := orchestrateServiceAccount(gcpClient, cfg); err != nil {
+		return fmt.Errorf("service account creation failed: %w", err)
+	}
+
+	// Step 2: Create Workload Identity Pool
+	fmt.Println("\n2. 🏊 Creating Workload Identity Pool...")
+	if err := orchestrateWorkloadIdentityPool(gcpClient, cfg); err != nil {
+		return fmt.Errorf("workload identity pool creation failed: %w", err)
+	}
+
+	// Step 3: Create Workload Identity Provider
+	fmt.Println("\n3. 🔗 Creating Workload Identity Provider...")
+	if err := orchestrateWorkloadIdentityProvider(gcpClient, cfg); err != nil {
+		return fmt.Errorf("workload identity provider creation failed: %w", err)
+	}
+
+	// Step 4: Bind Service Account to Workload Identity
+	fmt.Println("\n4. 🔐 Binding Service Account to Workload Identity...")
+	if err := orchestrateServiceAccountBinding(gcpClient, cfg); err != nil {
+		return fmt.Errorf("service account binding failed: %w", err)
+	}
+
+	// Step 5: Generate GitHub Actions Workflow
+	fmt.Println("\n5. 📄 Generating GitHub Actions Workflow...")
+	if err := orchestrateWorkflowGeneration(cfg); err != nil {
+		return fmt.Errorf("workflow generation failed: %w", err)
+	}
+
+	// Step 6: Save Configuration
+	fmt.Println("\n6. 💾 Saving Configuration...")
+	if err := orchestrateConfigurationSave(cfg); err != nil {
+		return fmt.Errorf("configuration save failed: %w", err)
+	}
+
+	// Step 7: Display Success Summary
+	displaySuccessSummary(cfg)
+
+	return nil
+}
+
+// runCleanup handles cleanup operations when setup fails
+func runCleanup(cfg *config.Config) error {
+	logger := logging.WithField("function", "runCleanup")
+	logger.Warn("Starting cleanup operations", "project_id", cfg.Project.ID)
+
+	// Initialize GCP client for cleanup
+	gcpClient, err := initializeGCPClient(cfg)
+	if err != nil {
+		logger.Error("Failed to initialize GCP client for cleanup", "error", err)
+		return fmt.Errorf("cleanup failed: could not initialize GCP client: %w", err)
+	}
+
+	var cleanupErrors []error
+
+	// Clean up in reverse order of creation
+	fmt.Println("🧹 Cleaning up resources...")
+
+	// 1. Remove IAM bindings
+	fmt.Println("   • Removing IAM bindings...")
+	if err := cleanupServiceAccountBindings(gcpClient, cfg); err != nil {
+		logger.Warn("Failed to cleanup IAM bindings", "error", err)
+		cleanupErrors = append(cleanupErrors, err)
+	}
+
+	// 2. Delete Workload Identity Provider
+	fmt.Println("   • Deleting Workload Identity Provider...")
+	if err := cleanupWorkloadIdentityProvider(gcpClient, cfg); err != nil {
+		logger.Warn("Failed to cleanup Workload Identity Provider", "error", err)
+		cleanupErrors = append(cleanupErrors, err)
+	}
+
+	// 3. Delete Workload Identity Pool
+	fmt.Println("   • Deleting Workload Identity Pool...")
+	if err := cleanupWorkloadIdentityPool(gcpClient, cfg); err != nil {
+		logger.Warn("Failed to cleanup Workload Identity Pool", "error", err)
+		cleanupErrors = append(cleanupErrors, err)
+	}
+
+	// 4. Delete Service Account (optional - usually keep for safety)
+	if cfg.Advanced.ForceUpdate {
+		fmt.Println("   • Deleting Service Account...")
+		if err := cleanupServiceAccount(gcpClient, cfg); err != nil {
+			logger.Warn("Failed to cleanup Service Account", "error", err)
+			cleanupErrors = append(cleanupErrors, err)
+		}
+	} else {
+		fmt.Println("   • Keeping Service Account (use --force-update to delete)")
+	}
+
+	if len(cleanupErrors) > 0 {
+		logger.Error("Cleanup completed with errors", "error_count", len(cleanupErrors))
+		return fmt.Errorf("cleanup completed with %d errors (check logs for details)", len(cleanupErrors))
+	}
+
+	logger.Info("Cleanup completed successfully")
+	return nil
+}
+
+// Helper Functions for Orchestration
+
+// initializeGCPClient creates and initializes a GCP client
+func initializeGCPClient(cfg *config.Config) (*gcp.Client, error) {
+	ctx := context.Background()
+	client, err := gcp.NewClient(ctx, cfg.Project.ID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create GCP client: %w", err)
+	}
+
+	fmt.Printf("   ✅ Connected to project: %s\n", cfg.Project.ID)
+	return client, nil
+}
+
+// orchestrateServiceAccount handles service account creation
+func orchestrateServiceAccount(client *gcp.Client, cfg *config.Config) error {
+	serviceAccountConfig := &gcp.ServiceAccountConfig{
+		Name:        cfg.ServiceAccount.Name,
+		DisplayName: cfg.ServiceAccount.DisplayName,
+		Description: cfg.ServiceAccount.Description,
+		Roles:       cfg.ServiceAccount.Roles,
+		CreateNew:   cfg.ServiceAccount.CreateNew,
+	}
+
+	fmt.Printf("   • Creating service account: %s\n", cfg.ServiceAccount.Name)
+
+	serviceAccountInfo, err := client.CreateServiceAccount(serviceAccountConfig)
+	if err != nil {
+		return err
+	}
+
+	fmt.Printf("   ✅ Service account created: %s\n", serviceAccountInfo.Email)
+
+	return nil
+}
+
+// orchestrateWorkloadIdentityPool handles workload identity pool creation
+func orchestrateWorkloadIdentityPool(client *gcp.Client, cfg *config.Config) error {
+	workloadIdentityConfig := &gcp.WorkloadIdentityConfig{
+		PoolName:   cfg.WorkloadIdentity.PoolName,
+		PoolID:     cfg.WorkloadIdentity.PoolID,
+		Repository: cfg.GetRepoFullName(),
+		CreateNew:  true, // Always create new for orchestration
+	}
+
+	fmt.Printf("   • Creating workload identity pool: %s\n", cfg.WorkloadIdentity.PoolID)
+
+	poolInfo, err := client.CreateWorkloadIdentityPool(workloadIdentityConfig)
+	if err != nil {
+		return err
+	}
+
+	fmt.Printf("   ✅ Workload identity pool created: %s\n", poolInfo.Name)
+	return nil
+}
+
+// orchestrateWorkloadIdentityProvider handles workload identity provider creation
+func orchestrateWorkloadIdentityProvider(client *gcp.Client, cfg *config.Config) error {
+	workloadIdentityConfig := &gcp.WorkloadIdentityConfig{
+		PoolID:              cfg.WorkloadIdentity.PoolID,
+		ProviderName:        cfg.WorkloadIdentity.ProviderName,
+		ProviderID:          cfg.WorkloadIdentity.ProviderID,
+		Repository:          cfg.GetRepoFullName(),
+		ServiceAccountEmail: cfg.GetServiceAccountEmail(),
+		AllowedBranches:     cfg.Repository.Branches,
+		AllowedTags:         cfg.Repository.Tags,
+		AllowPullRequests:   cfg.Repository.PullRequest,
+		CreateNew:           true, // Always create new for orchestration
+	}
+
+	fmt.Printf("   • Creating workload identity provider: %s\n", cfg.WorkloadIdentity.ProviderID)
+
+	providerInfo, err := client.CreateWorkloadIdentityProvider(workloadIdentityConfig)
+	if err != nil {
+		return err
+	}
+
+	fmt.Printf("   ✅ Workload identity provider created: %s\n", providerInfo.Name)
+	return nil
+}
+
+// orchestrateServiceAccountBinding handles service account to workload identity binding
+func orchestrateServiceAccountBinding(client *gcp.Client, cfg *config.Config) error {
+	workloadIdentityConfig := &gcp.WorkloadIdentityConfig{
+		PoolID:              cfg.WorkloadIdentity.PoolID,
+		ProviderID:          cfg.WorkloadIdentity.ProviderID,
+		Repository:          cfg.GetRepoFullName(),
+		ServiceAccountEmail: cfg.GetServiceAccountEmail(),
+	}
+
+	fmt.Printf("   • Binding service account to workload identity\n")
+
+	if err := client.BindServiceAccountToWorkloadIdentity(workloadIdentityConfig); err != nil {
+		return err
+	}
+
+	fmt.Printf("   ✅ Service account bound successfully\n")
+	return nil
+}
+
+// orchestrateWorkflowGeneration handles GitHub Actions workflow generation
+func orchestrateWorkflowGeneration(cfg *config.Config) error {
+	fmt.Printf("   • Generating workflow: %s\n", cfg.Workflow.Filename)
+
+	// Generate and write workflow with backup
+	writeOptions := github.WriteWorkflowFileOptions{
+		CreateBackup:      cfg.Advanced.BackupExisting,
+		OverwriteExisting: cfg.Advanced.ForceUpdate,
+		DryRun:            false,
+		Validate:          true,
+	}
+
+	if err := cfg.Workflow.GenerateAndWriteWorkflowWithOptions(writeOptions); err != nil {
+		return err
+	}
+
+	fmt.Printf("   ✅ Workflow generated: %s\n", cfg.Workflow.GetWorkflowFilePath())
+	return nil
+}
+
+// orchestrateConfigurationSave handles saving the final configuration
+func orchestrateConfigurationSave(cfg *config.Config) error {
+	configFile := "wif-config.json"
+
+	fmt.Printf("   • Saving configuration to: %s\n", configFile)
+
+	// Save with backup if file exists
+	if err := cfg.SaveWithBackup(configFile); err != nil {
+		return err
+	}
+
+	fmt.Printf("   ✅ Configuration saved successfully\n")
+	return nil
+}
+
+// displaySuccessSummary shows the final success summary
+func displaySuccessSummary(cfg *config.Config) {
+	fmt.Println("\n🎉 Setup Complete!")
+	fmt.Println("=================")
+
+	fmt.Printf("✅ Project: %s\n", cfg.Project.ID)
+	fmt.Printf("✅ Repository: %s\n", cfg.GetRepoFullName())
+	fmt.Printf("✅ Service Account: %s\n", cfg.GetServiceAccountEmail())
+	fmt.Printf("✅ Workload Identity Provider: %s\n", cfg.GetWorkloadIdentityProviderName())
+	fmt.Printf("✅ GitHub Actions Workflow: %s\n", cfg.Workflow.GetWorkflowFilePath())
+
+	fmt.Println("\n📋 Next Steps:")
+	fmt.Println("==============")
+	fmt.Println("1. 📤 Commit and push the generated workflow file to your repository")
+	fmt.Println("2. 🔐 Set up any required GitHub secrets in your repository settings")
+	fmt.Println("3. 🚀 Push changes to trigger the workflow and test deployment")
+	fmt.Println("4. 🔍 Monitor the workflow execution in the GitHub Actions tab")
+
+	fmt.Printf("\n💡 Workflow file location: %s\n", cfg.Workflow.GetWorkflowFilePath())
+	fmt.Printf("💡 Configuration saved to: wif-config.json\n")
+
+	fmt.Println("\n🔗 Useful commands:")
+	fmt.Println("   • gcp-wif workflow validate --config wif-config.json")
+	fmt.Println("   • gcp-wif workflow preview --config wif-config.json")
+	fmt.Printf("   • git add %s wif-config.json && git commit -m \"Add WIF workflow\"\n", cfg.Workflow.GetWorkflowFilePath())
+}
+
+// Cleanup Helper Functions
+
+// cleanupServiceAccountBindings removes IAM bindings
+func cleanupServiceAccountBindings(client *gcp.Client, cfg *config.Config) error {
+	workloadIdentityConfig := &gcp.WorkloadIdentityConfig{
+		PoolID:              cfg.WorkloadIdentity.PoolID,
+		ProviderID:          cfg.WorkloadIdentity.ProviderID,
+		Repository:          cfg.GetRepoFullName(),
+		ServiceAccountEmail: cfg.GetServiceAccountEmail(),
+	}
+
+	return client.RemoveServiceAccountWorkloadIdentityBinding(workloadIdentityConfig)
+}
+
+// cleanupWorkloadIdentityProvider removes the workload identity provider
+func cleanupWorkloadIdentityProvider(client *gcp.Client, cfg *config.Config) error {
+	return client.DeleteWorkloadIdentityProvider(cfg.WorkloadIdentity.PoolID, cfg.WorkloadIdentity.ProviderID)
+}
+
+// cleanupWorkloadIdentityPool removes the workload identity pool
+func cleanupWorkloadIdentityPool(client *gcp.Client, cfg *config.Config) error {
+	return client.DeleteWorkloadIdentityPool(cfg.WorkloadIdentity.PoolID)
+}
+
+// cleanupServiceAccount removes the service account
+func cleanupServiceAccount(client *gcp.Client, cfg *config.Config) error {
+	return client.DeleteServiceAccount(cfg.ServiceAccount.Name)
 }

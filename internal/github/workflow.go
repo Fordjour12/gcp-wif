@@ -290,6 +290,51 @@ func DefaultStagingWorkflowConfig() *WorkflowConfig {
 	return config
 }
 
+// DefaultDevelopmentWorkflowConfig returns a development environment workflow configuration
+func DefaultDevelopmentWorkflowConfig() *WorkflowConfig {
+	config := DefaultWorkflowConfig()
+	config.Name = "Development Deploy to Cloud Run"
+	config.Description = "Development deployment for feature testing and experimentation"
+
+	// Development triggers - very permissive
+	config.Triggers.Push.Branches = []string{"develop", "feature/*", "dev/*"}
+	config.Triggers.PullRequest.Enabled = true
+	config.Triggers.PullRequest.Branches = []string{"develop", "main"}
+	config.Triggers.PullRequest.Types = []string{"opened", "synchronize", "reopened", "ready_for_review"}
+
+	// Development security - minimal restrictions
+	config.Security.RequireApproval = false
+	config.Security.RestrictBranches = []string{} // No branch restrictions
+	config.Security.BlockForkedRepos = false      // Allow forks for development
+	config.Security.MaxTokenLifetime = "2h"       // Longer token lifetime for development
+
+	// Development resources - minimal
+	config.CPULimit = "0.5"
+	config.MemoryLimit = "1Gi"
+	config.MaxInstances = 5
+	config.MinInstances = 0
+
+	// Development environment with minimal protection
+	config.Advanced.Environments = map[string]Environment{
+		"development": {
+			Name: "development",
+			Variables: map[string]string{
+				"NODE_ENV":  "development",
+				"DEBUG":     "true",
+				"LOG_LEVEL": "debug",
+			},
+			Protection: EnvironmentProtection{
+				WaitTimer: 0, // No wait time for development
+			},
+		},
+	}
+
+	// Development timeout - shorter for faster feedback
+	config.Advanced.Timeout = "15m"
+
+	return config
+}
+
 // GenerateWorkflow generates a comprehensive GitHub Actions workflow file with enhanced WIF authentication
 func (w *WorkflowConfig) GenerateWorkflow() (string, error) {
 	logger := logging.WithField("function", "GenerateWorkflow")

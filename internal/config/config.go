@@ -42,6 +42,13 @@ type Config struct {
 
 	// Advanced configuration
 	Advanced AdvancedConfig `json:"advanced,omitempty"`
+
+	// Multi-region and environment support
+	Regions      []RegionConfig               `json:"regions,omitempty" yaml:"regions,omitempty"`
+	Environments map[string]EnvironmentConfig `json:"environments,omitempty" yaml:"environments,omitempty"`
+	CurrentEnv   string                       `json:"current_environment,omitempty" yaml:"current_environment,omitempty"`
+	Templates    TemplateConfig               `json:"templates,omitempty" yaml:"templates,omitempty"`
+	Global       GlobalConfig                 `json:"global,omitempty" yaml:"global,omitempty"`
 }
 
 // ProjectConfig holds GCP project related configuration
@@ -1129,4 +1136,324 @@ func (c *Config) SaveWithBackup(filePath string) error {
 
 	// Save the new configuration
 	return c.SaveToFile(filePath)
+}
+
+// Environment types for different deployment contexts
+const (
+	EnvironmentProduction  = "production"
+	EnvironmentStaging     = "staging"
+	EnvironmentDevelopment = "development"
+	EnvironmentTesting     = "testing"
+)
+
+// RegionConfig represents configuration for a specific GCP region
+type RegionConfig struct {
+	Name        string            `json:"name" yaml:"name"`
+	Zone        string            `json:"zone,omitempty" yaml:"zone,omitempty"`
+	Enabled     bool              `json:"enabled" yaml:"enabled"`
+	Priority    int               `json:"priority,omitempty" yaml:"priority,omitempty"`
+	Settings    map[string]string `json:"settings,omitempty" yaml:"settings,omitempty"`
+	Constraints struct {
+		DataResidency bool     `json:"data_residency,omitempty" yaml:"data_residency,omitempty"`
+		Compliance    []string `json:"compliance,omitempty" yaml:"compliance,omitempty"`
+	} `json:"constraints,omitempty" yaml:"constraints,omitempty"`
+}
+
+// EnvironmentConfig represents configuration for a specific deployment environment
+type EnvironmentConfig struct {
+	Name        string            `json:"name" yaml:"name"`
+	Type        string            `json:"type" yaml:"type"` // production, staging, development, testing
+	Description string            `json:"description,omitempty" yaml:"description,omitempty"`
+	Enabled     bool              `json:"enabled" yaml:"enabled"`
+	Region      string            `json:"region" yaml:"region"`
+	Resources   ResourceConfig    `json:"resources" yaml:"resources"`
+	Security    EnvSecurityConfig `json:"security" yaml:"security"`
+	Variables   map[string]string `json:"variables,omitempty" yaml:"variables,omitempty"`
+	Workflow    EnvWorkflowConfig `json:"workflow" yaml:"workflow"`
+}
+
+// ResourceConfig defines resource-specific configuration for environments
+type ResourceConfig struct {
+	ServiceAccount struct {
+		NameSuffix string            `json:"name_suffix,omitempty" yaml:"name_suffix,omitempty"`
+		Roles      []string          `json:"roles" yaml:"roles"`
+		Tags       map[string]string `json:"tags,omitempty" yaml:"tags,omitempty"`
+	} `json:"service_account" yaml:"service_account"`
+	WorkloadIdentity struct {
+		PoolSuffix     string `json:"pool_suffix,omitempty" yaml:"pool_suffix,omitempty"`
+		ProviderSuffix string `json:"provider_suffix,omitempty" yaml:"provider_suffix,omitempty"`
+		TTL            string `json:"ttl,omitempty" yaml:"ttl,omitempty"`
+	} `json:"workload_identity" yaml:"workload_identity"`
+}
+
+// EnvSecurityConfig defines environment-specific security settings
+type EnvSecurityConfig struct {
+	RequireApproval      bool     `json:"require_approval,omitempty" yaml:"require_approval,omitempty"`
+	RequireSignedCommits bool     `json:"require_signed_commits,omitempty" yaml:"require_signed_commits,omitempty"`
+	RestrictBranches     []string `json:"restrict_branches,omitempty" yaml:"restrict_branches,omitempty"`
+	AllowedPermissions   []string `json:"allowed_permissions,omitempty" yaml:"allowed_permissions,omitempty"`
+	SecretManagement     bool     `json:"secret_management,omitempty" yaml:"secret_management,omitempty"`
+}
+
+// EnvWorkflowConfig defines environment-specific workflow settings
+type EnvWorkflowConfig struct {
+	Template    string            `json:"template,omitempty" yaml:"template,omitempty"`
+	Variables   map[string]string `json:"variables,omitempty" yaml:"variables,omitempty"`
+	Triggers    []string          `json:"triggers,omitempty" yaml:"triggers,omitempty"`
+	Environment string            `json:"environment,omitempty" yaml:"environment,omitempty"`
+	Concurrency int               `json:"concurrency,omitempty" yaml:"concurrency,omitempty"`
+}
+
+// TemplateConfig defines configuration templates and presets
+type TemplateConfig struct {
+	Presets map[string]PresetConfig `json:"presets,omitempty" yaml:"presets,omitempty"`
+}
+
+// PresetConfig defines a configuration preset for quick setup
+type PresetConfig struct {
+	Name        string                 `json:"name" yaml:"name"`
+	Description string                 `json:"description" yaml:"description"`
+	Type        string                 `json:"type" yaml:"type"` // web-app, api-service, batch-job, etc.
+	Config      map[string]interface{} `json:"config" yaml:"config"`
+}
+
+// GlobalConfig defines global settings that apply across all environments
+type GlobalConfig struct {
+	DefaultRegion     string            `json:"default_region,omitempty" yaml:"default_region,omitempty"`
+	NamePrefix        string            `json:"name_prefix,omitempty" yaml:"name_prefix,omitempty"`
+	Labels            map[string]string `json:"labels,omitempty" yaml:"labels,omitempty"`
+	NotificationEmail string            `json:"notification_email,omitempty" yaml:"notification_email,omitempty"`
+	BackupEnabled     bool              `json:"backup_enabled,omitempty" yaml:"backup_enabled,omitempty"`
+	MonitoringEnabled bool              `json:"monitoring_enabled,omitempty" yaml:"monitoring_enabled,omitempty"`
+}
+
+// GetCurrentEnvironment returns the current environment configuration
+func (c *Config) GetCurrentEnvironment() (*EnvironmentConfig, error) {
+	if c.CurrentEnv == "" {
+		return nil, fmt.Errorf("no current environment set")
+	}
+
+	env, exists := c.Environments[c.CurrentEnv]
+	if !exists {
+		return nil, fmt.Errorf("environment '%s' not found", c.CurrentEnv)
+	}
+
+	return &env, nil
+}
+
+// GetEnvironment returns a specific environment configuration
+func (c *Config) GetEnvironment(name string) (*EnvironmentConfig, error) {
+	env, exists := c.Environments[name]
+	if !exists {
+		return nil, fmt.Errorf("environment '%s' not found", name)
+	}
+
+	return &env, nil
+}
+
+// GetRegion returns a specific region configuration
+func (c *Config) GetRegion(name string) (*RegionConfig, error) {
+	for _, region := range c.Regions {
+		if region.Name == name {
+			return &region, nil
+		}
+	}
+	return nil, fmt.Errorf("region '%s' not found", name)
+}
+
+// GetEnabledRegions returns all enabled regions
+func (c *Config) GetEnabledRegions() []RegionConfig {
+	var enabled []RegionConfig
+	for _, region := range c.Regions {
+		if region.Enabled {
+			enabled = append(enabled, region)
+		}
+	}
+	return enabled
+}
+
+// GetEnvironmentsByType returns environments of a specific type
+func (c *Config) GetEnvironmentsByType(envType string) map[string]EnvironmentConfig {
+	result := make(map[string]EnvironmentConfig)
+	for name, env := range c.Environments {
+		if env.Type == envType && env.Enabled {
+			result[name] = env
+		}
+	}
+	return result
+}
+
+// ValidateEnvironmentConfig validates environment-specific configuration
+func (c *Config) ValidateEnvironmentConfig(envName string) *ValidationResult {
+	result := &ValidationResult{Valid: true}
+
+	env, exists := c.Environments[envName]
+	if !exists {
+		result.Valid = false
+		result.Errors = append(result.Errors, ValidationError{
+			Field:   "environment",
+			Message: fmt.Sprintf("Environment '%s' not found", envName),
+		})
+		return result
+	}
+
+	// Validate environment type
+	validTypes := []string{EnvironmentProduction, EnvironmentStaging, EnvironmentDevelopment, EnvironmentTesting}
+	if !contains(validTypes, env.Type) {
+		result.Valid = false
+		result.Errors = append(result.Errors, ValidationError{
+			Field:   "environment.type",
+			Message: fmt.Sprintf("Invalid environment type '%s'. Must be one of: %v", env.Type, validTypes),
+		})
+	}
+
+	// Validate region exists
+	if env.Region != "" {
+		if _, err := c.GetRegion(env.Region); err != nil {
+			result.Valid = false
+			result.Errors = append(result.Errors, ValidationError{
+				Field:   "environment.region",
+				Message: fmt.Sprintf("Region '%s' not found for environment '%s'", env.Region, envName),
+			})
+		}
+	}
+
+	// Validate resource configuration
+	if len(env.Resources.ServiceAccount.Roles) == 0 {
+		result.Errors = append(result.Errors, ValidationError{
+			Field:   "environment.resources.service_account.roles",
+			Message: "At least one IAM role must be specified for the service account",
+		})
+		result.Valid = false
+	}
+
+	return result
+}
+
+// SetCurrentEnvironment sets the current active environment
+func (c *Config) SetCurrentEnvironment(envName string) error {
+	if _, exists := c.Environments[envName]; !exists {
+		return fmt.Errorf("environment '%s' not found", envName)
+	}
+	c.CurrentEnv = envName
+	return nil
+}
+
+// GenerateResourceName generates a resource name for the current environment
+func (c *Config) GenerateResourceName(resourceType, baseName string) string {
+	parts := []string{}
+
+	// Add global prefix if configured
+	if c.Global.NamePrefix != "" {
+		parts = append(parts, c.Global.NamePrefix)
+	}
+
+	// Add base name
+	parts = append(parts, baseName)
+
+	// Add environment suffix if current environment is set
+	if c.CurrentEnv != "" {
+		if env, err := c.GetCurrentEnvironment(); err == nil {
+			switch resourceType {
+			case "service-account":
+				if env.Resources.ServiceAccount.NameSuffix != "" {
+					parts = append(parts, env.Resources.ServiceAccount.NameSuffix)
+				} else {
+					parts = append(parts, env.Name)
+				}
+			case "workload-identity-pool":
+				if env.Resources.WorkloadIdentity.PoolSuffix != "" {
+					parts = append(parts, env.Resources.WorkloadIdentity.PoolSuffix)
+				} else {
+					parts = append(parts, env.Name, "pool")
+				}
+			case "workload-identity-provider":
+				if env.Resources.WorkloadIdentity.ProviderSuffix != "" {
+					parts = append(parts, env.Resources.WorkloadIdentity.ProviderSuffix)
+				} else {
+					parts = append(parts, env.Name, "provider")
+				}
+			default:
+				parts = append(parts, env.Name)
+			}
+		}
+	}
+
+	return strings.Join(parts, "-")
+}
+
+// GetEffectiveConfig returns the effective configuration for the current environment
+func (c *Config) GetEffectiveConfig() (*Config, error) {
+	if c.CurrentEnv == "" {
+		return c, nil // Return base config if no environment is set
+	}
+
+	env, err := c.GetCurrentEnvironment()
+	if err != nil {
+		return nil, err
+	}
+
+	// Create a copy of the base config
+	effective := *c
+
+	// Override with environment-specific settings
+	if env.Workflow.Template != "" {
+		// Apply environment-specific workflow template
+		switch env.Workflow.Template {
+		case "production":
+			prodConfig := github.DefaultProductionWorkflowConfig()
+			effective.Workflow = *prodConfig
+		case "staging":
+			stagingConfig := github.DefaultStagingWorkflowConfig()
+			effective.Workflow = *stagingConfig
+		case "development":
+			devConfig := github.DefaultDevelopmentWorkflowConfig()
+			effective.Workflow = *devConfig
+		}
+	}
+
+	// Merge environment variables into workflow environment
+	if env.Workflow.Environment != "" {
+		// Get or create the environment
+		environments := effective.Workflow.Advanced.Environments
+		if environments == nil {
+			environments = make(map[string]github.Environment)
+		}
+
+		environment, exists := environments[env.Workflow.Environment]
+		if !exists {
+			environment = github.Environment{
+				Name:      env.Workflow.Environment,
+				Variables: make(map[string]string),
+			}
+		}
+
+		// Merge environment variables
+		if environment.Variables == nil {
+			environment.Variables = make(map[string]string)
+		}
+		for k, v := range env.Variables {
+			environment.Variables[k] = v
+		}
+
+		environments[env.Workflow.Environment] = environment
+		effective.Workflow.Advanced.Environments = environments
+	}
+
+	// Apply environment-specific resource settings
+	if env.Region != "" {
+		effective.Workflow.Region = env.Region
+	}
+
+	return &effective, nil
+}
+
+// Helper function to check if slice contains string
+func contains(slice []string, item string) bool {
+	for _, s := range slice {
+		if s == item {
+			return true
+		}
+	}
+	return false
 }

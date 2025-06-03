@@ -258,15 +258,6 @@ All notable changes to the GCP WIF CLI Tool development will be documented in th
   - Environment and secrets configuration properly applied and displayed in configuration summary
   - All new flags properly registered and functioning in CLI help system
 
-### Development Status
-- **Progress**: 20/25 sub-tasks completed (80%)
-- **Current Phase**: Task 4.0 - Build GitHub Actions Workflow Generation (IN PROGRESS)
-- **Completed Milestones**: 
-  - ✅ Task 1.0 - Setup Project Structure and CLI Framework
-  - ✅ Task 2.0 - Interactive Configuration Collection System
-  - ✅ Task 3.0 - Develop GCP Resource Creation and Management
-- **Next Milestone**: Task 4.0 - Build GitHub Actions Workflow Generation
-
 #### Sub-task 4.4: Create health check and validation logic for deployments ✅
 - Enhanced `internal/github/workflow.go` with comprehensive health check management:
   - **Health Check Management Methods**:
@@ -337,18 +328,163 @@ All notable changes to the GCP WIF CLI Tool development will be documented in th
   - Confirmed proper flag registration and functionality
   - Tested command structure and parameter passing
 
+#### Sub-task 4.6: Add support for multiple workflow templates (production, staging, development) ✅
+- Enhanced `internal/github/workflow.go` with comprehensive template system:
+  - **Development Template**: Added `DefaultDevelopmentWorkflowConfig()` for feature testing and experimentation:
+    - Very permissive triggers: `develop`, `feature/*`, `dev/*` branches
+    - Minimal security restrictions and no branch restrictions
+    - Allows forked repositories for development collaboration
+    - Minimal resource allocation (0.5 CPU, 1Gi memory, max 5 instances)
+    - Debug-enabled environment variables and shorter timeout (15m)
+    - Longer token lifetime (2h) for development workflows
+  - **Complete Template Suite**: Now supports four comprehensive templates:
+    - `default` - General purpose balanced configuration
+    - `production` - High security, strict approval process, enhanced monitoring
+    - `staging` - Testing environment with moderate restrictions
+    - `development` - Feature development with minimal restrictions
+- Enhanced CLI support in `cmd/workflow.go`:
+  - **Template Selection**: Updated `--template` flag to support `development` and `dev` aliases
+  - **Template Validation**: Enhanced error messages to include all available templates
+  - **Help Documentation**: Updated help text to reflect all available template options
+- **Template Differentiation**:
+  - **Production**: Strict security, signed commits, required reviewers, multi-platform builds
+  - **Staging**: Moderate security, testing-focused, reasonable resource limits
+  - **Development**: Minimal restrictions, debug-enabled, fast feedback loops, forked repo support
+  - **Default**: Balanced configuration suitable for most use cases
+- Comprehensive testing and verification:
+  - Successfully built project with all template functionality
+  - Verified CLI help system shows all template options including development
+  - Confirmed template selection and validation working correctly
+  - Tested development template with `--template development` and `--template dev` aliases
+
 ### Development Status
-- **Progress**: 21/25 sub-tasks completed (84%)
-- **Current Phase**: Task 4.0 - Build GitHub Actions Workflow Generation (IN PROGRESS)
+- **Progress**: 22/25 sub-tasks completed (88%)
+- **Current Phase**: Task 5.0 - Implement Complete End-to-End Workflow (READY TO START)
 - **Completed Milestones**: 
   - ✅ Task 1.0 - Setup Project Structure and CLI Framework
   - ✅ Task 2.0 - Interactive Configuration Collection System
   - ✅ Task 3.0 - Develop GCP Resource Creation and Management
-- **Next Milestone**: Task 4.0 - Build GitHub Actions Workflow Generation
+  - ✅ Task 4.0 - Build GitHub Actions Workflow Generation
+- **Next Milestone**: Task 5.0 - Implement Complete End-to-End Workflow
 
 ### Next Steps
-- Continue with Task 4.0: Build GitHub Actions Workflow Generation
-  - Sub-task 4.6: Add support for multiple workflow templates (production, staging, development)
+- Begin Task 5.0: Implement Complete End-to-End Workflow
+  - Sub-task 5.1: Implement complete setup orchestration
+
+#### Sub-task 5.1: Implement complete setup orchestration ✅
+- Enhanced `cmd/setup.go` with comprehensive end-to-end orchestration functionality:
+  - **Complete Setup Workflow**: Implemented `runOrchestration()` function that executes full WIF setup from start to finish
+  - **Orchestration Steps**: 6-step process including GCP client initialization, service account creation, workload identity pool/provider setup, IAM bindings, workflow generation, and configuration saving
+  - **Dry-Run Functionality**: Added `runDryRunMode()` to preview all operations without making changes, showing detailed breakdown of what would be executed
+  - **Interactive Confirmation**: Added user confirmation prompt before executing operations (skippable in non-interactive mode)
+  - **Error Handling & Cleanup**: Implemented `runCleanup()` function for automatic cleanup on failure with `--cleanup-on-failure` flag
+  - **Helper Functions**: Created comprehensive orchestration helper functions:
+    - `initializeGCPClient()` - GCP client initialization with context support
+    - `orchestrateServiceAccount()` - Service account creation with role assignment
+    - `orchestrateWorkloadIdentityPool()` - Pool creation with repository binding
+    - `orchestrateWorkloadIdentityProvider()` - Provider setup with GitHub OIDC configuration
+    - `orchestrateServiceAccountBinding()` - IAM policy binding with security conditions
+    - `orchestrateWorkflowGeneration()` - GitHub Actions workflow file generation
+    - `orchestrateConfigurationSave()` - Final configuration persistence
+  - **Success Summary**: Added `displaySuccessSummary()` with comprehensive completion information and next steps guidance
+  - **Cleanup Functions**: Implemented cleanup helper functions for failed operations:
+    - `cleanupServiceAccountBindings()` - Remove IAM bindings
+    - `cleanupWorkloadIdentityProvider()` - Delete WIF provider
+    - `cleanupWorkloadIdentityPool()` - Delete WIF pool
+    - `cleanupServiceAccount()` - Delete service account (with force flag)
+- **Command Integration**: 
+  - Seamless integration with existing configuration system and validation
+  - Support for all existing flags and interactive/non-interactive modes
+  - Proper error handling with structured logging and user-friendly messages
+  - Compatible with dry-run, backup, force-update, and cleanup-on-failure options
+- **Comprehensive Testing**:
+  - Successfully compiled and tested complete orchestration functionality
+  - Verified dry-run mode shows detailed 6-step operation breakdown
+  - Confirmed proper flag handling and configuration validation
+  - Tested interactive and non-interactive execution modes
+
+### Development Status
+- **Progress**: 23/25 sub-tasks completed (92%)
+- **Current Phase**: Task 5.0 - Implement Complete End-to-End Workflow (IN PROGRESS)
+- **Completed Milestones**: 
+  - ✅ Task 1.0 - Setup Project Structure and CLI Framework
+  - ✅ Task 2.0 - Interactive Configuration Collection System
+  - ✅ Task 3.0 - Develop GCP Resource Creation and Management
+  - ✅ Task 4.0 - Build GitHub Actions Workflow Generation
+- **Next Milestone**: Continue Task 5.0 - Implement Complete End-to-End Workflow
+
+### Next Steps
+- Continue Task 5.0: Implement Complete End-to-End Workflow
+  - Sub-task 5.2: Add cleanup and rollback functionality
+
+#### Sub-task 5.2: Add cleanup and rollback functionality ✅
+- Created comprehensive `cmd/cleanup.go` with advanced cleanup capabilities:
+  - **Selective Cleanup**: Granular control over what gets cleaned up with scope flags:
+    - `--all` - Complete cleanup of all WIF resources
+    - `--service-account` - Clean up only service account and its bindings
+    - `--workload-identity` - Remove only workload identity pools and providers  
+    - `--workflows` - Remove only GitHub Actions workflow files
+    - `--iam-bindings` - Remove only IAM policy bindings (keep resources)
+  - **Safety and Verification Features**:
+    - `--dry-run` - Preview operations without making changes
+    - `--confirm` - Require explicit confirmation for each resource type
+    - `--backup-first` - Create backups before deletion
+    - `--verify-deletion` - Verify each resource is actually deleted after removal
+    - `--show-details` - Display detailed information about resources before cleanup
+  - **Advanced Cleanup Options**:
+    - `--force` - Skip all confirmation prompts and safety checks
+    - `--parallel` - Delete resources in parallel for faster cleanup
+    - `--ignore-errors` - Continue cleanup even if some operations fail
+    - `--timeout` and `--retries` - Configurable operation timeouts and retry logic
+  - **Resource Management**: Support for cleaning specific resources by ID with flags like `--pool-id`, `--provider-id`, `--service-account-name`
+  - **Comprehensive Results**: Detailed cleanup results showing success/failure counts, duration, and backup locations
+
+- Created comprehensive `cmd/rollback.go` with intelligent rollback capabilities:
+  - **Multiple Rollback Sources**:
+    - `--from-backup` - Restore from specific backup file
+    - `--from-snapshot` - Restore from configuration snapshot
+    - `--from-config` - Restore from previous configuration file
+    - `--auto-detect` - Automatically find and use most recent backup
+  - **Rollback Operations**:
+    - `--cleanup-first` - Clean up current resources before restoration
+    - `--restore-files` - Restore workflow and configuration files
+    - `--recreate-resources` - Recreate GCP resources from backup configuration
+    - `--restore-bindings` - Restore IAM policy bindings
+  - **Safety and Control**:
+    - `--dry-run` - Preview rollback operations without making changes
+    - `--interactive` - Confirm each rollback step interactively
+    - `--show-diff` - Show differences between current and target state
+    - `--create-snapshot` - Create snapshot of current state before rollback
+    - `--verify-restore` - Verify each restored resource after creation
+  - **Intelligent Backup Discovery**: Auto-detection of backup files with timestamp parsing and smart file pattern matching
+  - **Configuration Comparison**: Visual diff display showing changes between current and target configurations
+  - **Step-by-Step Execution**: Interactive mode with individual step confirmation and skip options
+
+- Enhanced existing cleanup functionality in `cmd/setup.go`:
+  - Improved integration with `--cleanup-on-failure` flag
+  - Better error handling and recovery during orchestration failures
+  - Comprehensive cleanup helper functions for each resource type
+
+- **Command Integration and Testing**:
+  - Successfully compiled and tested both cleanup and rollback commands
+  - Verified comprehensive help systems with detailed examples and flag documentation
+  - Tested dry-run modes showing detailed operation breakdowns
+  - Confirmed proper flag handling and validation
+  - Verified auto-detection functionality for backup files
+
+### Development Status
+- **Progress**: 24/25 sub-tasks completed (96%)
+- **Current Phase**: Task 5.0 - Implement Complete End-to-End Workflow (NEARLY COMPLETE)
+- **Completed Milestones**: 
+  - ✅ Task 1.0 - Setup Project Structure and CLI Framework
+  - ✅ Task 2.0 - Interactive Configuration Collection System
+  - ✅ Task 3.0 - Develop GCP Resource Creation and Management
+  - ✅ Task 4.0 - Build GitHub Actions Workflow Generation
+- **Next Milestone**: Complete Task 5.0 - Implement Complete End-to-End Workflow
+
+### Next Steps
+- Continue Task 5.0: Implement Complete End-to-End Workflow
+  - Sub-task 5.3: Create comprehensive validation and testing framework
 
 ---
 
@@ -362,8 +498,8 @@ All notable changes to the GCP WIF CLI Tool development will be documented in th
 - ✅ 4.2 Implement Docker build and push configuration
 - ✅ 4.3 Add support for GitHub Actions environments and secrets
 - ✅ 4.4 Create health check and validation logic for deployments
-- ⏳ 4.5 Implement workflow file generation and writing functionality
-- ⏳ 4.6 Add support for multiple workflow templates (production, staging, development)
+- ✅ 4.5 Implement workflow file generation and writing functionality
+- ✅ 4.6 Add support for multiple workflow templates (production, staging, development)
 
 ### Task 5.0: Implement Complete End-to-End Workflow (PENDING)
 **Objective**: Integrate all components for complete automated setup.
