@@ -46,6 +46,10 @@ Eliminate the manual complexity of configuring WIF through the Google Cloud Cons
 ### **Prerequisites**
 - Go 1.21 or later
 - Google Cloud CLI (`gcloud`) installed and configured
+  - You will also need to authenticate for Application Default Credentials (ADC) if you haven't already. Run the following command and follow the browser prompts:
+    ```bash
+    gcloud auth application-default login
+    ```
 - Access to a Google Cloud Project with necessary permissions
 - GitHub repository with Actions enabled
 

@@ -257,6 +257,13 @@ func validateProjectAccess(ctx context.Context, projectID string) (*ProjectInfo,
 	// Create a temporary Resource Manager client for validation
 	resourceManager, err := cloudresourcemanager.NewService(ctx)
 	if err != nil {
+		if strings.Contains(err.Error(), "could not find default credentials") {
+			return nil, errors.NewAuthenticationError(
+				"Failed to create temporary Resource Manager client: Application Default Credentials (ADC) not found.",
+				"Please run 'gcloud auth application-default login' to set up ADC and try again.",
+				"For more information, visit: https://cloud.google.com/docs/authentication/external/set-up-adc",
+			)
+		}
 		return nil, errors.WrapError(err, errors.ErrorTypeGCP, "TEMP_CLIENT_FAILED",
 			"Failed to create temporary Resource Manager client")
 	}

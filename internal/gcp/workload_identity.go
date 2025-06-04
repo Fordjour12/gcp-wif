@@ -207,11 +207,18 @@ func ValidateWorkloadIdentityConfig(config *WorkloadIdentityConfig) error {
 		return errors.NewValidationError("Workload Identity Pool ID is required")
 	}
 
-	if config.ProviderID == "" {
-		return errors.NewValidationError("Workload Identity Provider ID is required")
-	}
+	// ProviderID is not strictly required here, as this function is used by
+	// CreateWorkloadIdentityPool which only needs PoolID and Repository.
+	// ProviderID is essential for CreateWorkloadIdentityProvider, which will fail
+	// implicitly if it's missing when constructing gcloud commands.
+	// if config.ProviderID == "" {
+	// 	return errors.NewValidationError("Workload Identity Provider ID is required")
+	// }
 
 	// Enhanced repository validation
+	if config.Repository == "" { // Ensuring Repository is also checked if ProviderID check is removed
+		return errors.NewValidationError("GitHub repository is required")
+	}
 	if err := ValidateGitHubRepository(config.Repository); err != nil {
 		return err
 	}
@@ -225,11 +232,15 @@ func ValidateWorkloadIdentityConfig(config *WorkloadIdentityConfig) error {
 	}
 
 	// Validate provider ID format (3-32 characters, lowercase, hyphens)
-	if len(config.ProviderID) < 3 || len(config.ProviderID) > 32 {
-		return errors.NewValidationError(
-			"Provider ID must be 3-32 characters long",
-			"Use lowercase letters, digits, and hyphens only",
-			"Cannot start or end with hyphens")
+	// Only validate ProviderID format if it's actually provided.
+	if config.ProviderID != "" {
+		if len(config.ProviderID) < 3 || len(config.ProviderID) > 32 {
+			return errors.NewValidationError(
+				"Provider ID must be 3-32 characters long",
+				"Use lowercase letters, digits, and hyphens only",
+				"Cannot start or end with hyphens")
+		}
+		// Potentially add regex check for ProviderID format here if needed, similar to PoolID
 	}
 
 	// Validate GitHub OIDC configuration if provided
