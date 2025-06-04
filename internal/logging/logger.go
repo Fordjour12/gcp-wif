@@ -101,7 +101,8 @@ func NewLogger(config *LoggerConfig) (*Logger, error) {
 	if config.Verbose {
 		handler = slog.NewTextHandler(writer, opts)
 	} else {
-		handler = slog.NewJSONHandler(writer, opts)
+		// Default to TextHandler for more human-readable logs
+		handler = slog.NewTextHandler(writer, opts)
 	}
 
 	slogger := slog.New(handler)
