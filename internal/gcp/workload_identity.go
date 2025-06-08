@@ -130,6 +130,30 @@ func GetDefaultGitHubOIDCConfig() *GitHubOIDCConfig {
 	}
 }
 
+// GetGitHubRepositorySpecificOIDCConfig returns GitHub OIDC configuration with repository-specific audience
+func GetGitHubRepositorySpecificOIDCConfig(repository string) *GitHubOIDCConfig {
+	if repository == "" {
+		return GetDefaultGitHubOIDCConfig()
+	}
+
+	parts := strings.Split(repository, "/")
+	if len(parts) != 2 {
+		return GetDefaultGitHubOIDCConfig()
+	}
+
+	orgOrUser := parts[0]
+	githubAudience := fmt.Sprintf("https://github.com/%s", orgOrUser)
+
+	return &GitHubOIDCConfig{
+		IssuerURI:         "https://token.actions.githubusercontent.com",
+		AllowedAudiences:  []string{githubAudience, "sts.googleapis.com"}, // Support both patterns
+		DefaultAudience:   githubAudience,
+		ValidateTokenPath: true,
+		RequireActor:      true,
+		BlockForkedRepos:  true,
+	}
+}
+
 // GetDefaultGitHubClaimsMapping returns default GitHub claims mapping
 func GetDefaultGitHubClaimsMapping() *GitHubClaimsMapping {
 	return &GitHubClaimsMapping{
@@ -283,7 +307,7 @@ func ValidateGitHubOIDCConfig(config *GitHubOIDCConfig) error {
 				break
 			}
 		}
-		// Also allow GitHub-specific audiences
+		// Also allow GitHub-specific audiences (matches bash script pattern)
 		if strings.HasPrefix(audience, "https://github.com/") {
 			isValid = true
 		}
@@ -361,6 +385,8 @@ func (c *Client) CreateWorkloadIdentityPool(config *WorkloadIdentityConfig) (*Wo
 	if displayName == "" {
 		displayName = fmt.Sprintf("WIF Pool for %s", config.Repository)
 	}
+	// Ensure display name doesn't exceed 32 characters
+	displayName = truncateDisplayName(displayName, 32)
 
 	description := config.PoolDescription
 	if description == "" {
@@ -460,16 +486,19 @@ func (c *Client) CreateWorkloadIdentityProvider(config *WorkloadIdentityConfig) 
 	if displayName == "" {
 		displayName = fmt.Sprintf("GitHub OIDC for %s", config.Repository)
 	}
+	// Ensure display name doesn't exceed 32 characters
+	displayName = truncateDisplayName(displayName, 32)
 
 	description := config.ProviderDescription
 	if description == "" {
 		description = fmt.Sprintf("GitHub OIDC provider for repository %s", config.Repository)
 	}
 
-	// Get GitHub OIDC configuration (use default if not provided)
+	// Get GitHub OIDC configuration (use repository-specific if not provided)
 	oidcConfig := config.GitHubOIDC
 	if oidcConfig == nil {
-		oidcConfig = GetDefaultGitHubOIDCConfig()
+		// Use repository-specific config that matches bash script pattern
+		oidcConfig = GetGitHubRepositorySpecificOIDCConfig(config.Repository)
 	}
 
 	// Get claims mapping (use default if not provided)
@@ -1231,12 +1260,17 @@ func (c *Client) GetWorkloadIdentityPoolInfo(poolID string) (*WorkloadIdentityPo
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		// Check if it's a 404 error (not found)
-		if strings.Contains(err.Error(), "404") || strings.Contains(err.Error(), "not found") {
+		outputStr := string(output)
+		errorStr := err.Error()
+		if strings.Contains(errorStr, "404") ||
+			strings.Contains(strings.ToLower(errorStr), "not found") ||
+			strings.Contains(outputStr, "NOT_FOUND") ||
+			strings.Contains(strings.ToLower(outputStr), "not found") {
 			logger.Debug("Workload identity pool not found", "pool_id", poolID)
 			return &WorkloadIdentityPoolInfo{Exists: false}, nil
 		}
 		return nil, errors.WrapError(err, errors.ErrorTypeGCP, "WI_POOL_GET_FAILED",
-			fmt.Sprintf("Failed to get workload identity pool %s", poolID))
+			fmt.Sprintf("Failed to get workload identity pool %s: %s", poolID, outputStr))
 	}
 
 	var poolData map[string]interface{}
@@ -1280,12 +1314,17 @@ func (c *Client) GetWorkloadIdentityProviderInfo(poolID, providerID string) (*Wo
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		// Check if it's a 404 error (not found)
-		if strings.Contains(err.Error(), "404") || strings.Contains(err.Error(), "not found") {
+		outputStr := string(output)
+		errorStr := err.Error()
+		if strings.Contains(errorStr, "404") ||
+			strings.Contains(strings.ToLower(errorStr), "not found") ||
+			strings.Contains(outputStr, "NOT_FOUND") ||
+			strings.Contains(strings.ToLower(outputStr), "not found") {
 			logger.Debug("Workload identity provider not found", "pool_id", poolID, "provider_id", providerID)
 			return &WorkloadIdentityProviderInfo{Exists: false}, nil
 		}
 		return nil, errors.WrapError(err, errors.ErrorTypeGCP, "WI_PROVIDER_GET_FAILED",
-			fmt.Sprintf("Failed to get workload identity provider %s", providerID))
+			fmt.Sprintf("Failed to get workload identity provider %s: %s", providerID, outputStr))
 	}
 
 	var providerData map[string]interface{}
@@ -1478,4 +1517,39 @@ func extractRepositoryFromCondition(condition string) string {
 		return "unknown"
 	}
 	return condition[start : start+end]
+}
+
+// truncateDisplayName truncates a display name to the specified maximum length
+// while preserving meaningful information
+func truncateDisplayName(name string, maxLength int) string {
+	if len(name) <= maxLength {
+		return name
+	}
+
+	// If we need to truncate, try to keep meaningful parts
+	if maxLength <= 3 {
+		return name[:maxLength]
+	}
+
+	// For repository names, try to preserve owner/repo format
+	if strings.Contains(name, "/") && strings.Contains(name, "WIF Pool for ") {
+		repo := strings.TrimPrefix(name, "WIF Pool for ")
+		parts := strings.Split(repo, "/")
+		if len(parts) == 2 {
+			owner, repoName := parts[0], parts[1]
+			// Try "WIF: owner/repo"
+			shortForm := fmt.Sprintf("WIF: %s/%s", owner, repoName)
+			if len(shortForm) <= maxLength {
+				return shortForm
+			}
+			// Try "WIF: repo"
+			shortForm = fmt.Sprintf("WIF: %s", repoName)
+			if len(shortForm) <= maxLength {
+				return shortForm
+			}
+		}
+	}
+
+	// Generic truncation with ellipsis
+	return name[:maxLength-3] + "..."
 }
